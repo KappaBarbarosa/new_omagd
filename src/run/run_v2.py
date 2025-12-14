@@ -191,7 +191,7 @@ def pretrain_graph_reconstructer(args, runner, learner, buffer, logger):
     eval_interval = getattr(args, 'graph_pretrain_eval_interval', 20)
     eval_episodes = getattr(args, 'graph_pretrain_eval_episodes', args.batch_size_run * 5)
     
-    logger.console_logger.info(\"=\" * 60)
+    logger.console_logger.info("=" * 60)
     logger.console_logger.info(f"=== Graph Reconstructer Pretrain: {stage} ===")
     logger.console_logger.info(f"    Episodes to collect: {pretrain_episodes}")
     logger.console_logger.info(f"    Training epochs: {pretrain_epochs}")

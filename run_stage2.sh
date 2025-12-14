@@ -1,0 +1,32 @@
+#!/bin/bash
+# =============================================================================
+# Stage 2 Training Script - Train Mask Predictor (with frozen tokenizer)
+# =============================================================================
+# Usage: ./run_stage2.sh [map_name] [tokenizer_path]
+# Example: ./run_stage2.sh 3m results/models/.../pretrain_stage1_best
+#
+# The tokenizer_path should point to the directory containing tokenizer.th
+# from Stage 1 training.
+export WANDB_API_KEY=247e23f9da34555c8f9d172474c4d49ad150e88d
+export CUDA_VISIBLE_DEVICES=0
+MAP_NAME=${1:-"3m"}
+TOKENIZER_PATH=${2:-""}
+
+if [ -z "$TOKENIZER_PATH" ]; then
+    echo "ERROR: Please provide path to pretrained tokenizer"
+    echo "Usage: ./run_stage2.sh [map_name] [tokenizer_path]"
+    echo "Example: ./run_stage2.sh 3m results/models/.../pretrain_stage1_best"
+    exit 1
+fi
+
+echo "=============================================="
+echo " Stage 2: Training Mask Predictor on ${MAP_NAME}"
+echo " Using tokenizer from: ${TOKENIZER_PATH}"
+echo "=============================================="
+
+python src/main.py --config=omagd --env-config=sc2 \
+    with env_args.map_name=${MAP_NAME} \
+    recontructer_stage=stage2 \
+    use_graph_reconstruction=True \
+    pretrained_tokenizer_path="${TOKENIZER_PATH}" \
+    t_max=100
