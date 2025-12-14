@@ -4,7 +4,7 @@ class MultiAgentEnv(object):
         """ Returns reward, terminated, info """
         raise NotImplementedError
 
-    def get_obs(self):
+    def get_obs(self, no_range_limit=False):
         """ Returns all agent observations in a list """
         raise NotImplementedError
 

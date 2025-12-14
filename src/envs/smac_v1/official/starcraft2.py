@@ -96,6 +96,7 @@ class StarCraft2Env(MultiAgentEnv):
         heuristic_ai=False,
         heuristic_rest=False,
         debug=False,
+        return_full_obs=False,
     ):
         """
         Create a StarCraftC2Env environment.
@@ -192,6 +193,8 @@ class StarCraft2Env(MultiAgentEnv):
         debug: bool, optional
             Log messages about observations, state, actions and rewards for
             debugging purposes (default is False).
+        return_full_obs: bool, optional
+            Whether or not to return the full observation (default is False).
         """
         # Map arguments
         self.map_name = map_name
@@ -235,6 +238,7 @@ class StarCraft2Env(MultiAgentEnv):
         self.heuristic_ai = heuristic_ai
         self.heuristic_rest = heuristic_rest
         self.debug = debug
+        self.return_full_obs = return_full_obs
         self.window_size = (window_size_x, window_size_y)
         self.replay_dir = replay_dir
         self.replay_prefix = replay_prefix
@@ -429,7 +433,6 @@ class StarCraft2Env(MultiAgentEnv):
                     60, "*"
                 )
             )
-
         return self.get_obs(), self.get_state()
 
     def _restart(self):
@@ -943,7 +946,7 @@ class StarCraft2Env(MultiAgentEnv):
         ]
         return vals
 
-    def get_obs_agent(self, agent_id):
+    def get_obs_agent(self, agent_id, no_range_limit=False):
         """Returns observation for agent_id. The observation is composed of:
 
         - agent movement features (where it can move to, height information
@@ -1011,7 +1014,7 @@ class StarCraft2Env(MultiAgentEnv):
                 dist = self.distance(x, y, e_x, e_y)
 
                 if (
-                    dist < sight_range and e_unit.health > 0
+                    (dist < sight_range or no_range_limit) and e_unit.health > 0
                 ):  # visible and alive
                     # Sight range > shoot range
                     enemy_feats[e_id, 0] = avail_actions[
@@ -1054,9 +1057,9 @@ class StarCraft2Env(MultiAgentEnv):
                 dist = self.distance(x, y, al_x, al_y)
 
                 if (
-                    dist < sight_range and al_unit.health > 0
+                    (dist < sight_range or no_range_limit) and al_unit.health > 0
                 ):  # visible and alive
-                    ally_feats[i, 0] = 1  # visible
+                    ally_feats[i, 0] = dist < sight_range  # visible
                     ally_feats[i, 1] = dist / sight_range  # distance
                     ally_feats[i, 2] = (al_x - x) / sight_range  # relative X
                     ally_feats[i, 3] = (al_y - y) / sight_range  # relative Y
@@ -1124,12 +1127,12 @@ class StarCraft2Env(MultiAgentEnv):
 
         return agent_obs
 
-    def get_obs(self):
+    def get_obs(self, no_range_limit=False):
         """Returns all agent observations in a list.
         NOTE: Agents should have access only to their local observations
         during decentralised execution.
         """
-        agents_obs = [self.get_obs_agent(i) for i in range(self.n_agents)]
+        agents_obs = [self.get_obs_agent(i, no_range_limit) for i in range(self.n_agents)]
         return agents_obs
 
     def get_state(self):

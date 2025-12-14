@@ -1,0 +1,17 @@
+import torch.nn as nn
+
+
+class NodeDecoder(nn.Module):
+    def __init__(
+        self, code_dim: int, out_dim: int, hid: int = 128, dropout: float = 0.0
+    ):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(code_dim, hid),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hid, out_dim),
+        )
+
+    def forward(self, z):  # z: [N, code_dim]
+        return self.net(z)  # x_hat: [N, out_dim] (對齊 data.x 的維度)

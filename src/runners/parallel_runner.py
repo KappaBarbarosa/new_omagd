@@ -84,7 +84,8 @@ class ParallelRunner:
         pre_transition_data = {
             "state": [],
             "avail_actions": [],
-            "obs": []
+            "obs": [],
+            "full_obs": []
         }
         # Get the obs, state and avail_actions back
         for parent_conn in self.parent_conns:
@@ -92,13 +93,14 @@ class ParallelRunner:
             pre_transition_data["state"].append(data["state"])
             pre_transition_data["avail_actions"].append(data["avail_actions"])
             pre_transition_data["obs"].append(data["obs"])
+            pre_transition_data["full_obs"].append(data["full_obs"])
 
         self.batch.update(pre_transition_data, ts=0, mark_filled=True)
 
         self.t = 0
         self.env_steps_this_run = 0
 
-    def run(self, test_mode=False):
+    def run(self, test_mode=False, skip_logging=False):
         self.reset()
 
         all_terminated = False
@@ -154,7 +156,8 @@ class ParallelRunner:
             pre_transition_data = {
                 "state": [],
                 "avail_actions": [],
-                "obs": []
+                "obs": [],
+                "full_obs": []
             }
             # Receive data back for each unterminated env
             for idx, parent_conn in enumerate(self.parent_conns):
@@ -180,6 +183,7 @@ class ParallelRunner:
                     pre_transition_data["state"].append(data["state"])
                     pre_transition_data["avail_actions"].append(data["avail_actions"])
                     pre_transition_data["obs"].append(data["obs"])
+                    pre_transition_data["full_obs"].append(data["full_obs"])
 
             # Add post_transiton data into the batch
             self.batch.update(post_transition_data, bs=envs_not_terminated, ts=self.t, mark_filled=False)
@@ -227,13 +231,14 @@ class ParallelRunner:
         cur_returns.extend(episode_returns)
 
         n_test_runs = max(1, self.args.test_nepisode // self.batch_size) * self.batch_size
-        if test_mode and (len(self.test_returns) == n_test_runs):
-            self._log(cur_returns, cur_stats, log_prefix)
-        elif not test_mode and self.t_env - self.log_train_stats_t >= self.args.runner_log_interval:
-            self._log(cur_returns, cur_stats, log_prefix)
-            if hasattr(self.mac.action_selector, "epsilon"):
-                self.logger.log_stat("epsilon", self.mac.action_selector.epsilon, self.t_env)
-            self.log_train_stats_t = self.t_env
+        if not skip_logging:  # Skip logging during pretrain data collection
+            if test_mode and (len(self.test_returns) == n_test_runs):
+                self._log(cur_returns, cur_stats, log_prefix)
+            elif not test_mode and self.t_env - self.log_train_stats_t >= self.args.runner_log_interval:
+                self._log(cur_returns, cur_stats, log_prefix)
+                if hasattr(self.mac.action_selector, "epsilon"):
+                    self.logger.log_stat("epsilon", self.mac.action_selector.epsilon, self.t_env)
+                self.log_train_stats_t = self.t_env
 
         return self.batch
         # return clear_no_reward_sub_trajectory(self.batch)
@@ -264,11 +269,13 @@ def env_worker(remote, env_fn):
             state = env.get_state()
             avail_actions = env.get_avail_actions()
             obs = env.get_obs()
+            full_obs = env.get_obs(no_range_limit=True)
             remote.send({
                 # Data for the next timestep needed to pick an action
                 "state": state,
                 "avail_actions": avail_actions,
                 "obs": obs,
+                "full_obs": full_obs,
                 # Rest of the data for the current timestep
                 "reward": reward,
                 "terminated": terminated,
@@ -279,7 +286,8 @@ def env_worker(remote, env_fn):
             remote.send({
                 "state": env.get_state(),
                 "avail_actions": env.get_avail_actions(),
-                "obs": env.get_obs()
+                "obs": env.get_obs(),
+                "full_obs": env.get_obs(no_range_limit=True)
             })
         elif cmd == "close":
             env.close()
