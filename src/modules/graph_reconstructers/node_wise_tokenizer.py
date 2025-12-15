@@ -10,7 +10,7 @@ from modules.graph_reconstructers.codebook import VectorQuantizer
 
 # Utility functions
 from utils.graph_utils import compute_sample_wise_mse_loss
-from modules.graph_reconstructers.tokenizer_logger import evaluate_tokenizer_reconstruction
+from modules.graph_reconstructers.tokenizer_logger import evaluate_tokenizer_reconstruction, format_sample_comparison
 
 
 class NodeWiseTokenizer(nn.Module):
@@ -205,6 +205,10 @@ class NodeWiseTokenizer(nn.Module):
             )
             if eval_metrics is not None:
                 logs.update(eval_metrics)
+                # Print samples to console if available
+                if "samples" in eval_metrics:
+                    logger.info("=== Stage 1 Tokenizer Sample Comparison ===")
+                    logger.info(format_sample_comparison(eval_metrics["samples"]))
 
         return {
             "loss": total_loss,

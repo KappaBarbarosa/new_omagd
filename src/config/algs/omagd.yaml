@@ -121,7 +121,13 @@ pretrained_mask_predictor_path: ""
 graph_pretrain_episodes: 5000     # Episodes to collect before pretrain
 graph_pretrain_epochs: 100       # Training epochs for pretrain
 graph_pretrain_batch_size: 32     # Batch size for pretrain (defaults to batch_size if not set)
-graph_lr: 0.001                   # Learning rate for graph reconstructer
+graph_lr: 0.005                   # Learning rate for graph reconstructer
 graph_pretrain_log_interval: 1   # Log interval during pretrain (epochs)
 graph_pretrain_eval_interval: 20  # Evaluation interval (epochs)
 graph_pretrain_eval_episodes: 40  # Number of NEW episodes to collect for evaluation
+
+# =============================================================================
+# Evaluation-Only Configuration
+# =============================================================================
+evaluation_only: False            # Run evaluation-only mode (no training)
+eval_report_episodes: 3           # Number of episodes for detailed step-by-step logging

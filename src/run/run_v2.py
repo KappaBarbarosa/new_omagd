@@ -361,6 +361,138 @@ def evaluate_graph_reconstructer(args, runner, learner, logger, eval_episodes, e
     return avg_loss, avg_metrics
 
 
+def evaluation_only_graph_reconstructer(args, runner, learner, logger):
+    """
+    Evaluation-only mode for graph reconstructer.
+    
+    1. Collects 40 episodes for aggregate evaluation metrics
+    2. Collects 3 additional episodes for detailed step-by-step logging
+    """
+    stage = getattr(args, 'recontructer_stage', 'stage1')
+    # Support both naming conventions for flexibility
+    eval_episodes = getattr(args, 'eval_only_episodes', getattr(args, 'graph_pretrain_eval_episodes', 40))
+    detailed_episodes = getattr(args, 'eval_report_episodes', 3)
+    
+    logger.console_logger.info("=" * 80)
+    logger.console_logger.info(f"=== Evaluation-Only Mode: {stage} ===")
+    logger.console_logger.info(f"    Aggregate evaluation episodes: {eval_episodes}")
+    logger.console_logger.info(f"    Detailed logging episodes: {detailed_episodes}")
+    logger.console_logger.info("=" * 80)
+    
+    # Ensure model is on correct device
+    if args.use_cuda:
+        learner.graph_reconstructer = learner.graph_reconstructer.to(args.device)
+    learner.graph_reconstructer.eval()
+    
+    # ========== Phase 1: Aggregate Evaluation (40 episodes) ==========
+    logger.console_logger.info(f"\n[Phase 1] Collecting {eval_episodes} episodes for aggregate evaluation...")
+    
+    eval_batches = []
+    collected = 0
+    with tqdm(total=eval_episodes, desc="Collecting evaluation episodes") as pbar:
+        while collected < eval_episodes:
+            with th.no_grad():
+                episode_batch = runner.run(test_mode=True, skip_logging=True)
+                if episode_batch.batch_size > 0:
+                    eval_batches.append(episode_batch)
+                    collected += episode_batch.batch_size
+                    pbar.update(episode_batch.batch_size)
+    
+    # Compute aggregate metrics
+    logger.console_logger.info(f"[Phase 1] Computing aggregate metrics...")
+    total_loss = 0.0
+    all_metrics = {}
+    num_batches = len(eval_batches)
+    
+    with th.no_grad():
+        for batch in eval_batches:
+            max_ep_t = batch.max_t_filled()
+            batch = batch[:, :max_ep_t]
+            
+            if batch.device != args.device:
+                batch.to(args.device)
+            
+            loss, metrics = learner.eval_graph_reconstructor(batch)
+            total_loss += loss
+            
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)):
+                    if key not in all_metrics:
+                        all_metrics[key] = 0.0
+                    all_metrics[key] += value
+    
+    # Average and print aggregate metrics
+    avg_loss = total_loss / max(num_batches, 1)
+    avg_metrics = {k: v / max(num_batches, 1) for k, v in all_metrics.items()}
+    
+    logger.console_logger.info("\n" + "=" * 80)
+    logger.console_logger.info("AGGREGATE EVALUATION RESULTS")
+    logger.console_logger.info("=" * 80)
+    logger.console_logger.info(f"  Total Episodes: {collected}")
+    logger.console_logger.info(f"  Average Loss: {avg_loss:.4f}")
+    
+    if stage == 'stage1':
+        display_keys = ['mse', 'cosine_similarity', 'feature_correlation', 'perplexity', 'codebook_usage']
+    else:
+        display_keys = [
+            'masked_accuracy', 'top1_accuracy', 'top3_accuracy', 'top5_accuracy',
+            'mrr', 'hungarian_accuracy', 
+            'predicted_mse', 'gt_mse', 'predicted_cosim', 'gt_cosim'
+        ]
+    
+    for key in display_keys:
+        if key in avg_metrics:
+            logger.console_logger.info(f"  {key}: {avg_metrics[key]:.4f}")
+    
+    logger.console_logger.info("=" * 80)
+    
+    # ========== Phase 2: Detailed Episode Logging (3 episodes) ==========
+    logger.console_logger.info(f"\n[Phase 2] Collecting {detailed_episodes} episodes for detailed logging...")
+    
+    detailed_batches = []
+    collected = 0
+    with tqdm(total=detailed_episodes, desc="Collecting detailed episodes") as pbar:
+        while collected < detailed_episodes:
+            with th.no_grad():
+                episode_batch = runner.run(test_mode=True, skip_logging=True)
+                if episode_batch.batch_size > 0:
+                    # Take first episode from batch if batch_size > 1
+                    for i in range(min(episode_batch.batch_size, detailed_episodes - collected)):
+                        # Slice single episode
+                        single_batch = episode_batch[i:i+1]
+                        detailed_batches.append(single_batch)
+                        collected += 1
+                        pbar.update(1)
+                        if collected >= detailed_episodes:
+                            break
+    
+    # Print detailed episode logs
+    logger.console_logger.info(f"\n[Phase 2] Printing detailed step-by-step logs...")
+    
+    from modules.graph_reconstructers.evaluation.episode_logger import print_detailed_episode_full
+    
+    for i, batch in enumerate(detailed_batches):
+        max_ep_t = batch.max_t_filled()
+        batch = batch[:, :max_ep_t]
+        
+        if batch.device != args.device:
+            batch.to(args.device)
+        
+        print_detailed_episode_full(
+            batch=batch,
+            graph_reconstructer=learner.graph_reconstructer,
+            stacked_frames=1,
+            n_nodes_per_frame=learner.graph_reconstructer.n_nodes_per_frame,
+            episode_num=i + 1,
+            agent_idx=0,  # First agent
+            logger=logger.console_logger,
+        )
+    
+    logger.console_logger.info("=" * 80)
+    logger.console_logger.info("Evaluation-Only Mode Complete!")
+    logger.console_logger.info("=" * 80)
+
+
 def run_sequential(args, logger):
     # Init runner so we can get env info
     runner = r_REGISTRY[args.runner](args=args, logger=logger)
@@ -461,9 +593,28 @@ def run_sequential(args, logger):
     start_time = time.time()
     last_time = start_time
 
-    # ========== Graph Reconstructer Pretrain ==========
+    # ========== Graph Reconstructer Pretrain or Evaluation ==========
     if getattr(args, 'use_graph_reconstruction', False):
-        pretrain_graph_reconstructer(args, runner, learner, buffer, logger)
+        # Check if evaluation-only mode
+        if getattr(args, 'evaluation_only', False):
+            # Load pretrained models first
+            pretrained_tokenizer_path = getattr(args, 'pretrained_tokenizer_path', '')
+            pretrained_mask_predictor_path = getattr(args, 'pretrained_mask_predictor_path', '')
+            
+            if pretrained_tokenizer_path:
+                logger.console_logger.info(f"Loading tokenizer from {pretrained_tokenizer_path}")
+                learner.load_graph_reconstructor(pretrained_tokenizer_path, stage='stage1')
+            
+            if pretrained_mask_predictor_path:
+                logger.console_logger.info(f"Loading mask predictor from {pretrained_mask_predictor_path}")
+                learner.load_graph_reconstructor(pretrained_mask_predictor_path, stage='stage2')
+            
+            # Run evaluation-only
+            evaluation_only_graph_reconstructer(args, runner, learner, logger)
+            runner.close_env()
+            return
+        else:
+            pretrain_graph_reconstructer(args, runner, learner, buffer, logger)
 
     # logger.console_logger.info("Beginning training for {} timesteps".format(args.t_max))
 

@@ -1,6 +1,5 @@
 import torch
 from harl.utils.envs_tools import check  # type: ignore
-from loguru import logger
 
 
 class ObsProcessor:
@@ -25,26 +24,16 @@ class ObsProcessor:
         self.enemy_start_idx = 1
         self.ally_start_idx = 1 + self.n_enemies
 
-        logger.info("🔍 [OBS_PROCESSOR_V2] Initialized with:")
-        logger.info(
-            f"  - n_allies: {self.n_allies}, ally_feat_dim: {self.ally_feat_dim}"
-        )
-        logger.info(
-            f"  - n_enemies: {self.n_enemies}, enemy_feat_dim: {self.enemy_feat_dim}"
-        )
-        logger.info(
-            f"  - move_feat_dim: {self.move_feat_dim}, own_feat_dim: {self.own_feat_dim}"
-        )
-
     def build_graph_from_obs(self, obs):
         """
         Convert observation data to graph structure
 
         Args:
             obs: [batch_size, obs_dim] observation data
-                - ally_feats: [N_ally, D_ally] (includes visible, dist, relx, rely, health, shield, onehot(unit_type), last_action?)
-                - enemy_feats: [N_enemy, D_enemy] (includes available_to_attack, dist, relx, rely, health, shield, onehot(unit_type))
+                SMAC order (from starcraft2.py get_obs_agent):
                 - move_feats: [D_move] movement-related features
+                - enemy_feats: [N_enemy, D_enemy] (includes available_to_attack, dist, relx, rely, health, shield, onehot(unit_type))
+                - ally_feats: [N_ally, D_ally] (includes visible, dist, relx, rely, health, shield, onehot(unit_type), last_action?)
                 - own_feats: [D_own] own state features
 
         Returns:
@@ -53,21 +42,21 @@ class ObsProcessor:
             - edge_index: [batch_size, 2, num_edges] edge indices
             - node_types: [batch_size, num_nodes] node types
             - visible_mask: [batch_size, num_nodes] visibility mask
-            - SELF node contains: [visible, dist, relx, rely, move_feats, own_feats, agent_id?]
+            - SELF node contains: [visible=1, dist=0, relx=0, rely=0, move_feats, own_feats]
             - ALLY/ENEMY nodes contain: [visible, dist, relx, rely, stats...]
         """
         obs = check(obs).float()
         B = obs.shape[0]
-        useless_mask = (obs == 0).all(dim=1)  # batch data whose obs is zero
 
         # Extract segments per SMAC layout for all batches
+        # SMAC order: move_feats → enemy_feats → ally_feats → own_feats
         idx = 0
-        ally_flat = obs[:, idx : idx + self.n_allies * self.ally_feat_dim]
-        idx += self.n_allies * self.ally_feat_dim
-        enemy_flat = obs[:, idx : idx + self.n_enemies * self.enemy_feat_dim]
-        idx += self.n_enemies * self.enemy_feat_dim
         move_feats = obs[:, idx : idx + self.move_feat_dim]
         idx += self.move_feat_dim
+        enemy_flat = obs[:, idx : idx + self.n_enemies * self.enemy_feat_dim]
+        idx += self.n_enemies * self.enemy_feat_dim
+        ally_flat = obs[:, idx : idx + self.n_allies * self.ally_feat_dim]
+        idx += self.n_allies * self.ally_feat_dim
         own_feats = obs[:, idx : idx + self.own_feat_dim]
         idx += self.own_feat_dim
 
@@ -82,7 +71,6 @@ class ObsProcessor:
             own_feats,
             obs.device,
             obs.dtype,
-            useless_mask,
         )
 
     def _build_graphs(
@@ -94,7 +82,6 @@ class ObsProcessor:
         own_feats,
         device,
         dtype,
-        useless_mask,
     ):
         """
         Vectorized batch graph construction - process all batches at once
@@ -205,7 +192,6 @@ class ObsProcessor:
             "batch_size": B,
             "num_nodes": N,
             "num_edges": edge_index.shape[1],
-            "useless_mask": useless_mask,  # [B]
         }
 
     def _pad_features(self, features, target_dim):
@@ -255,7 +241,7 @@ class ObsProcessor:
         else:
             return features[:, :, :target_dim]
 
-    def print_graph_data(self, data, batch_index=0, max_nodes=10):
+    def print_graph_data(self, data, batch_index=0, max_nodes=10, logger=None):
         """
         Print detailed information of graph data
 
@@ -331,7 +317,7 @@ class ObsProcessor:
                 f"  - Non-zero feature nodes: {non_zero_nodes}/{N} ({non_zero_nodes / N * 100:.1f}%)"
             )
 
-    def print_graph_summary(self, data, batch_index=0):
+    def print_graph_summary(self, data, batch_index=0, logger=None):
         """
         Concise graph data summary print
 
