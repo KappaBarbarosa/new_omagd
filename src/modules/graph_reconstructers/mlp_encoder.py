@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class EncoderMLP(nn.Module):
+class MLPEncoder(nn.Module):
     """
     MLP Encoder for Node-wise Tokenizer
 

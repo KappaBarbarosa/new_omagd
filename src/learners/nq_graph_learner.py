@@ -87,8 +87,6 @@ class NQGraphLearner(NQLearner):
             self.logger.log_stat("train/graph_loss", loss.item(), epoch)
             self.logger.log_stat("train/graph_grad_norm", grad_norm.item() if hasattr(grad_norm, 'item') else grad_norm, epoch)
             
-            # Log all loss_info metrics with graph_ prefix
-            # Key metrics: total_loss, vq_loss, node_recon_loss, commit_loss, perplexity, codebook_usage
             for key, value in loss_info.items():
                 if isinstance(value, (int, float)):
                     self.logger.log_stat(f"train/graph_{key}", value, epoch)

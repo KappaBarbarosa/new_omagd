@@ -10,7 +10,7 @@
 export WANDB_API_KEY=247e23f9da34555c8f9d172474c4d49ad150e88d
 export CUDA_VISIBLE_DEVICES=0
 MAP_NAME=${1:-"3m"}
-TOKENIZER_PATH=${2:-""}
+TOKENIZER_PATH="results/models/sc2_3m-obs_aid=1-obs_act=1/algo=omagd-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/omagd__2025-12-14_23-40-23/pretrain_stage1_best"
 
 if [ -z "$TOKENIZER_PATH" ]; then
     echo "ERROR: Please provide path to pretrained tokenizer"
@@ -29,4 +29,4 @@ python src/main.py --config=omagd --env-config=sc2 \
     recontructer_stage=stage2 \
     use_graph_reconstruction=True \
     pretrained_tokenizer_path="${TOKENIZER_PATH}" \
-    t_max=100
+    use_wandb=True

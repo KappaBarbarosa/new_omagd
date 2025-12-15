@@ -119,7 +119,7 @@ pretrained_mask_predictor_path: ""
 # Pretrain Configuration
 # =============================================================================
 graph_pretrain_episodes: 5000     # Episodes to collect before pretrain
-graph_pretrain_epochs: 100        # Training epochs for pretrain
+graph_pretrain_epochs: 100       # Training epochs for pretrain
 graph_pretrain_batch_size: 32     # Batch size for pretrain (defaults to batch_size if not set)
 graph_lr: 0.001                   # Learning rate for graph reconstructer
 graph_pretrain_log_interval: 1   # Log interval during pretrain (epochs)

@@ -11,6 +11,8 @@ from modules.graph_reconstructers.obs_processor import ObsProcessor
 from modules.graph_reconstructers.node_wise_tokenizer import NodeWiseTokenizer
 from modules.graph_reconstructers.graph_discrete_diffusion import GraphDiscreteDiffusion
 from modules.graph_reconstructers.mask_predictor import MaskedTokenPredictor
+from utils.graph_utils import _identify_missing_nodes
+from modules.graph_reconstructers.mask_predictor_logger import evaluation
 
 
 @contextmanager 
@@ -49,12 +51,8 @@ class GraphReconstructer(nn.Module):
         # Stage 2 configuration
         self.stage2_model_type = args.stage2_model_type
         self.stage2_input_mode = args.stage2_input_mode
-        self.mask_ratio = self.mask_predictor_config["mask_ratio"]
         
         logger.info(f"🎯 [STAGE2-MODEL] Using model type: {self.stage2_model_type}")
-        if self.stage2_model_type == "masked_predictor":
-            logger.info(f"🎭 [MASKED-PREDICTOR] Mask ratio: {self.mask_ratio}")
-
 
         # Training stage
         self.training_stage = args.recontructer_stage
@@ -198,12 +196,10 @@ class GraphReconstructer(nn.Module):
             # Get tokens: [B*F, N]
             with torch.no_grad(), temporary_eval_mode(self.tokenizer):
                 gt_tokens_flat = self._forward_stage1(full_graph_data)
-            print(f"gt_tokens_flat shape: {gt_tokens_flat.shape}")
             
             # Reshape #2: BEFORE Stage 2 model: [B*F, N] -> [B, F*N]
             gt_tokens, full_graph_stage2 = self._reshape_for_stage2(gt_tokens_flat, full_graph_data)
             _, pure_graph_stage2 = self._reshape_for_stage2(gt_tokens_flat, pure_graph_data)
-            print(f"gt_tokens shape: {gt_tokens.shape}")
             
             # Identify missing nodes (in [B, F*N] format)
             missing_mask = _identify_missing_nodes(pure_graph_stage2, full_graph_stage2)
@@ -215,7 +211,6 @@ class GraphReconstructer(nn.Module):
             stage2_loss_result = self.stage2_model.compute_loss(
                 graph_data=full_graph_stage2,
                 gt_tokens=gt_tokens,
-                mask_ratio=self.mask_ratio,
                 useless_mask=full_graph_stage2.get("useless_mask"),
                 prioritize_missing_mask=missing_mask,
                 stacked_frames=self.stacked_frames if self.use_stacked_frames else 1,
@@ -224,17 +219,20 @@ class GraphReconstructer(nn.Module):
             )
             loss = stage2_loss_result["loss"]
             loss_info = stage2_loss_result["logs"]
+            
+            # Evaluate token reconstruction quality (only during validation)
             if self.training_stage == "stage2" and not training:
                 predicted_tokens = stage2_loss_result["predicted_tokens"]  # [B, F*N]
                 mask_positions = stage2_loss_result["mask_positions"]  # [B, F*N]
                 
-                # Decode tokens to features
+                # Decode tokens to features using frozen tokenizer
                 with torch.no_grad(), temporary_eval_mode(self.tokenizer):
                     # Get embeddings from tokens
                     predicted_features = self.tokenizer.decode_from_tokens(predicted_tokens)  # [B, F*N, D]
                     gt_features = self.tokenizer.decode_from_tokens(gt_tokens)  # [B, F*N, D]
                     
                 # Evaluate reconstruction quality
+                from modules.graph_reconstructers.evaluation import evaluate_token_reconstruction_quality
                 eval_metrics = evaluate_token_reconstruction_quality(
                     real_features=full_graph_stage2["x"],  # [B, F*N, D]
                     predicted_features=predicted_features,  # [B, F*N, D]

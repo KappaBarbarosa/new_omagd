@@ -3,10 +3,10 @@ import torch.nn as nn
 from loguru import logger
 
 # Original encoders/decoders
-from modules.graph_reconstructers.mlp_encoder import EncoderMLP
+from modules.graph_reconstructers.mlp_encoder import MLPEncoder
 from modules.graph_reconstructers.node_decoder import NodeDecoder
 from modules.graph_reconstructers.gnn_decoder import DecoderGNN
-from modules.graph_reconstructers.codebook import VectorQuantizerEMA
+from modules.graph_reconstructers.codebook import VectorQuantizer
 
 # Utility functions
 from utils.graph_utils import compute_sample_wise_mse_loss
@@ -56,7 +56,7 @@ class NodeWiseTokenizer(nn.Module):
         self.use_cosine = use_cosine
         self.n_codes = n_codes
 
-        self.enc = EncoderMLP(
+        self.enc = MLPEncoder(
             in_dim=in_dim,
             hid=hid,
             out_dim=code_dim,
@@ -68,7 +68,7 @@ class NodeWiseTokenizer(nn.Module):
             use_cosine=use_cosine,
         )
 
-        self.vq = VectorQuantizerEMA(
+        self.vq = VectorQuantizer(
             n_codes=n_codes,
             code_dim=code_dim,
             commitment_weight=commitment_weight,

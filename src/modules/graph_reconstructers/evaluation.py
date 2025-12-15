@@ -307,6 +307,7 @@ def evaluate_token_reconstruction_quality(
     gt_features: torch.Tensor,
     mask_positions: torch.Tensor,
     useless_mask: Optional[torch.Tensor] = None,
+    num_samples: int = 5,
 ) -> Optional[Dict[str, float]]:
     """
     Evaluate reconstruction quality with already-decoded node features.
@@ -319,17 +320,14 @@ def evaluate_token_reconstruction_quality(
         gt_features: [B, N, D] decoded features from GT tokens
         mask_positions: [B, N] boolean mask for masked nodes
         useless_mask: optional [B] mask for invalid samples
+        num_samples: number of sample comparisons to include
         
     Returns:
-        dict with predicted_mse, predicted_cosim, gt_mse, gt_cosim
+        dict with predicted_mse, predicted_cosim, gt_mse, gt_cosim, and samples
         or None if no valid samples/masked nodes
     """
     B, N, D = real_features.shape
-    print(f"real_features shape: {real_features.shape}")
-    print(f"predicted_features shape: {predicted_features.shape}")
-    print(f"gt_features shape: {gt_features.shape}")
-    print(f"mask_positions shape: {mask_positions.shape}")
-    print(f"useless_mask shape: {useless_mask.shape if useless_mask is not None else None}")
+    
     # Apply useless_mask if provided
     if useless_mask is not None:
         # Normalize useless_mask shape to [B]
@@ -380,10 +378,104 @@ def evaluate_token_reconstruction_quality(
     predicted_cosim = (real_norm * predicted_norm).sum(dim=1).mean().item()
     gt_cosim = (real_norm * gt_norm).sum(dim=1).mean().item()
     
-    return {
+    result = {
         "predicted_mse": predicted_mse,
         "predicted_cosim": predicted_cosim,
         "gt_mse": gt_mse,
         "gt_cosim": gt_cosim,
     }
+    
+    # Add sample comparisons with comprehensive metrics
+    if num_samples > 0 and num_masked_nodes > 0:
+        samples = []
+        sample_count = min(num_samples, num_masked_nodes)
+        sample_indices = torch.randperm(num_masked_nodes)[:sample_count]
+        
+        for i, idx in enumerate(sample_indices):
+            idx = idx.item()
+            # Show first 6 features for readability
+            max_feats = min(6, D)
+            real_node = real_masked[idx, :max_feats].cpu()
+            pred_node = predicted_masked[idx, :max_feats].cpu()
+            gt_node = gt_masked[idx, :max_feats].cpu()
+            
+            # Compute per-sample metrics
+            node_pred_mse = F.mse_loss(predicted_masked[idx], real_masked[idx]).item()
+            node_gt_mse = F.mse_loss(gt_masked[idx], real_masked[idx]).item()
+            
+            # Cosine similarity
+            real_norm = F.normalize(real_masked[idx:idx+1], p=2, dim=1)
+            pred_norm = F.normalize(predicted_masked[idx:idx+1], p=2, dim=1)
+            gt_norm_s = F.normalize(gt_masked[idx:idx+1], p=2, dim=1)
+            node_pred_cosim = (real_norm * pred_norm).sum().item()
+            node_gt_cosim = (real_norm * gt_norm_s).sum().item()
+            
+            sample = {
+                "id": i,
+                "original": [f"{v:.2f}" for v in real_node.tolist()],
+                "gt_dec": [f"{v:.2f}" for v in gt_node.tolist()],
+                "pred_dec": [f"{v:.2f}" for v in pred_node.tolist()],
+                "pred_mse": node_pred_mse,
+                "gt_mse": node_gt_mse,
+                "pred_cos": node_pred_cosim,
+                "gt_cos": node_gt_cosim,
+            }
+            samples.append(sample)
+        
+        result["samples"] = samples
+    
+    return result
+
+
+def format_stage2_sample_comparison(
+    samples: List, 
+    metrics: Dict = None,
+    max_features: int = 6
+) -> str:
+    """
+    Format Stage 2 sample comparisons with comprehensive metrics.
+    
+    Output format:
+    ┌─ Sample Reconstruction Report ─────────────────────────────────────┐
+    │ Metrics: Top1=0.61 | Top3=0.96 | Top5=1.00 | MRR=0.78 | Hung=0.61  │
+    │          MSE: pred=0.11 gt=0.11 | CosSim: pred=0.93 gt=0.94       │
+    ├─ Samples ──────────────────────────────────────────────────────────┤
+    │ #0: MSE=0.08/0.05 | Cos=0.95/0.97                                  │
+    │   Orig: [0.12, 0.45, 0.78, ...]                                    │
+    │   GT:   [0.11, 0.44, 0.79, ...]                                    │
+    │   Pred: [0.13, 0.43, 0.80, ...]                                    │
+    └────────────────────────────────────────────────────────────────────┘
+    """
+    if not samples:
+        return ""
+    
+    lines = []
+    
+    # Header with aggregate metrics (if provided)
+    if metrics:
+        top1 = metrics.get('top1_accuracy', 0)
+        top3 = metrics.get('top3_accuracy', 0)
+        top5 = metrics.get('top5_accuracy', 0)
+        mrr = metrics.get('mrr', 0)
+        hung = metrics.get('hungarian_accuracy', 0)
+        pred_mse = metrics.get('predicted_mse', 0)
+        gt_mse = metrics.get('gt_mse', 0)
+        pred_cos = metrics.get('predicted_cosim', 0)
+        gt_cos = metrics.get('gt_cosim', 0)
+        
+        lines.append(f"    Top1={top1:.2f} | Top3={top3:.2f} | Top5={top5:.2f} | MRR={mrr:.2f} | Hung={hung:.2f}")
+        lines.append(f"    MSE: pred={pred_mse:.3f} gt={gt_mse:.3f} | CosSim: pred={pred_cos:.3f} gt={gt_cos:.3f}")
+    
+    # Sample details
+    for s in samples:
+        orig_str = ", ".join(s["original"][:max_features])
+        gt_str = ", ".join(s["gt_dec"][:max_features])
+        pred_str = ", ".join(s["pred_dec"][:max_features])
+        
+        lines.append(f"    #{s['id']}: MSE={s['pred_mse']:.3f}/{s['gt_mse']:.3f} | Cos={s['pred_cos']:.2f}/{s['gt_cos']:.2f}")
+        lines.append(f"      Orig: [{orig_str}]")
+        lines.append(f"      GT:   [{gt_str}]")
+        lines.append(f"      Pred: [{pred_str}]")
+    
+    return "\n".join(lines)
 

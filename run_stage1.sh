@@ -18,6 +18,7 @@ for MAP_NAME in "${MAPS[@]}"; do
         with env_args.map_name=${MAP_NAME} \
         recontructer_stage=stage1 \
         use_graph_reconstruction=True \
+        use_wandb=True
     
     echo "Completed training on ${MAP_NAME}"
     echo ""

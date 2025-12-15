@@ -212,6 +212,7 @@ class MaskedTokenPredictor(nn.Module):
 
         self.input_mode = input_mode
         self.vocab_size = vocab_size
+        self.mask_ratio = mask_ratio
 
         # 1. The Encoder (backbone)
         self.encoder = GraphTransformer(
@@ -347,7 +348,7 @@ class MaskedTokenPredictor(nn.Module):
             input_mode=self.input_mode,
             vocab_size=self.vocab_size if self.input_mode == "token" else None,
             validation=validation,
-            use_hungarian=use_hungarian,
+            use_hungarian=True,  # Enable Hungarian metrics during validation
         )
         # If no valid tokens, last_frame_logs will be None, skip adding to logs
         if last_frame_logs is None:

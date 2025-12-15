@@ -324,19 +324,39 @@ def evaluate_graph_reconstructer(args, runner, learner, logger, eval_episodes, e
         if isinstance(value, (int, float)):
             logger.log_stat(f"eval/_{key}", value, epoch)
     
-    # Print key evaluation metrics to console 
+    # Print key evaluation metrics to console based on stage
     if avg_metrics:
+        stage = getattr(args, 'recontructer_stage', 'stage1')
+        
+        if stage == 'stage1':
+            # Stage 1 (tokenizer) metrics
+            display_keys = ['mse', 'cosine_similarity', 'feature_correlation', 'perplexity', 'codebook_usage']
+        else:
+            # Stage 2 (mask predictor) metrics  
+            display_keys = [
+                'masked_accuracy', 'top1_accuracy', 'top3_accuracy', 'top5_accuracy',
+                'mrr', 'hungarian_accuracy', 
+                'predicted_mse', 'gt_mse', 'predicted_cosim', 'gt_cosim'
+            ]
+        
         metrics_str = ", ".join([f"{k}: {v:.4f}" for k, v in avg_metrics.items() 
-                                  if k in ['mse', 'cosine_similarity', 'feature_correlation', 'perplexity', 'codebook_usage']])
+                                  if k in display_keys])
         if metrics_str:
             logger.console_logger.info(f"[Eval]   Metrics: {metrics_str}")
     
-    # Display sample comparisons from last batch
-    if eval_batches and 'samples' in metrics:
+    # Display sample comparisons from last batch (based on stage)
+    stage = getattr(args, 'recontructer_stage', 'stage1')
+    
+    if stage == 'stage1' and 'samples' in avg_metrics:
         from modules.graph_reconstructers.tokenizer_logger import format_sample_comparison
-        sample_str = format_sample_comparison(metrics.get('samples', []))
+        sample_str = format_sample_comparison(avg_metrics.get('samples', []))
         if sample_str:
             logger.console_logger.info(f"[Eval]   Sample Reconstructions:\n{sample_str}")
+    elif stage == 'stage2' and 'token_samples' in avg_metrics:
+        from modules.graph_reconstructers.mask_predictor_logger import format_token_samples
+        sample_str = format_token_samples(avg_metrics.get('token_samples', []), metrics=avg_metrics)
+        if sample_str:
+            logger.console_logger.info(f"[Eval]   Token Samples:\n{sample_str}")
     
     return avg_loss, avg_metrics
 

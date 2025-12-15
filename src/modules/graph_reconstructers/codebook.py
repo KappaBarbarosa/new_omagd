@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class VectorQuantizerEMA(nn.Module):
+class VectorQuantizer(nn.Module):
     """
     VQ with EMA codebook updates, optional cosine distance,
     and useful metrics (perplexity / usage).
