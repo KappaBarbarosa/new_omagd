@@ -243,6 +243,14 @@ class GraphReconstructer(nn.Module):
                 
                 if eval_metrics is not None:
                     loss_info.update(eval_metrics)
+                
+                # Print Stage 2 token samples (similar to Stage 1)
+                if "token_samples" in loss_info and loss_info["token_samples"]:
+                    from modules.graph_reconstructers.mask_predictor_logger import format_token_samples
+                    sample_str = format_token_samples(loss_info["token_samples"], loss_info)
+                    if sample_str:
+                        logger.info(f"=== Stage 2 Token Sample Comparison ===")
+                        logger.info(sample_str)
 
         else:
             raise ValueError(f"Unknown training stage: {self.training_stage}")

@@ -149,17 +149,10 @@ class GraphTransformer(nn.Module):
         # This serves as the input to the Transformer
         combined = x_proj + t_embed  # [B, N, d_model]
         
-        # 🎯 Add learnable query embeddings to ALL positions (like DETR)
-        # This allows each position to have a unique "query" that can specialize.
-        # With Hungarian matching, the model learns which query predicts which type of token.
-        # This is added to ALL positions (not just masked) for consistent learning.
+        # 🎯 Add learnable query embeddings to ALL positions (like positional encoding)
+        # This gives each position a unique identity, essential for predicting different tokens
         queries = self.query_embeddings[:N, :].unsqueeze(0).expand(B, -1, -1)
-        if mask_positions is not None:
-
-            masked_queries = queries * mask_positions.unsqueeze(-1).float()
-            combined = combined + masked_queries
-        else:
-            pass
+        combined = combined + queries  # Add to all positions, not just masked
         
         src = self.input_layernorm(combined)
         src = self.input_dropout(src)
@@ -233,6 +226,11 @@ class MaskedTokenPredictor(nn.Module):
         self.prediction_head = nn.Linear(d_model, vocab_size)
         
         self.hungarian_loss = TypeWiseHungarianLoss()
+        
+        # TODO: Make zero_vector_token_id configurable or auto-detect from tokenizer
+        # Currently hardcoded to 293 which is the token for zero-vector features
+        # This prevents the model from learning to always predict zero-vector
+        self.zero_vector_token_id = 293
 
     def forward(
         self, 
@@ -305,14 +303,15 @@ class MaskedTokenPredictor(nn.Module):
             mask_positions = prioritize_missing_mask
         else:
             # Create mask positions dynamically (for training)
+            # Exclude zero-vector tokens from masking
             mask_positions = self._create_mask_positions(
                 B, N, device, useless_mask, prioritize_missing_mask,
-                stacked_frames, n_nodes_per_frame
+                stacked_frames, n_nodes_per_frame, gt_tokens
             )
 
         # ========== Apply masking ==========
         masked_input = self._apply_masking(
-            graph_data, gt_tokens, mask_positions, B, N
+            gt_tokens, mask_positions
         )
 
         # Create masked graph data
@@ -332,6 +331,33 @@ class MaskedTokenPredictor(nn.Module):
         # Exclude useless samples
         if useless_mask is not None:
             loss_compute_mask = loss_compute_mask & (~useless_mask.unsqueeze(-1))
+        
+        # Exclude zero-vector tokens from loss computation
+        # This prevents the model from learning to always predict 293 (zero-vector)
+        if self.zero_vector_token_id is not None:
+            zero_token_mask = (gt_tokens == self.zero_vector_token_id)
+            loss_compute_mask = loss_compute_mask & (~zero_token_mask)
+        
+        # Collect training statistics for debugging
+        if not validation:
+            from modules.graph_reconstructers.training_stats import get_stats_collector
+            stats = get_stats_collector()
+            stats.collect(
+                gt_tokens=gt_tokens,
+                mask_positions=mask_positions,
+                node_types=graph_data["node_types"],
+                loss_compute_mask=loss_compute_mask,
+            )
+        else:
+            # Also collect eval statistics
+            from modules.graph_reconstructers.training_stats import get_eval_stats_collector
+            eval_stats = get_eval_stats_collector()
+            eval_stats.collect(
+                gt_tokens=gt_tokens,
+                mask_positions=mask_positions,
+                node_types=graph_data["node_types"],
+                loss_compute_mask=loss_compute_mask,
+            )
         
         # Extract last frame predictions and ground truth for logging
         # Only evaluate if there are valid masked tokens
@@ -388,10 +414,12 @@ class MaskedTokenPredictor(nn.Module):
         prioritize_missing_mask: Optional[torch.Tensor],
         stacked_frames: int = 1,
         n_nodes_per_frame: Optional[int] = None,
+        gt_tokens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Create mask positions for training.
         Only masks positions in the last frame when stacked_frames > 1.
+        Excludes zero-vector tokens (uninformative) from masking.
         """
         mask_positions = torch.zeros(B, N, dtype=torch.bool, device=device)
         
@@ -410,6 +438,33 @@ class MaskedTokenPredictor(nn.Module):
         for b in range(B):
             if useless_mask is not None and useless_mask[b]:
                 continue
+            
+            # Get valid nodes (exclude zero-vector tokens if gt_tokens provided)
+            if gt_tokens is not None:
+                # Find the zero-vector token ID (token with highest frequency in invisible nodes)
+                # For now, we detect it as the most common token in positions with all-zero features
+                # This assumes zero-vector maps to a specific token consistently
+                valid_for_mask = torch.ones(N, dtype=torch.bool, device=device)
+                
+                # Exclude nodes in last frame that have zero-vector token
+                # Zero-vector token is typically a specific code (need to detect or configure)
+                # For safety, exclude tokens that appear on non-visible nodes
+                last_frame_tokens = gt_tokens[b, last_frame_start:last_frame_end]
+                
+                # Heuristic: find most frequent token (likely zero-vector)
+                if self.zero_vector_token_id is None:
+                    # Detect zero-vector token as the most common one
+                    unique, counts = torch.unique(last_frame_tokens, return_counts=True)
+                    if len(unique) > 0:
+                        most_common_idx = counts.argmax()
+                        self.zero_vector_token_id = unique[most_common_idx].item()
+                
+                # Exclude zero-vector tokens from masking
+                if self.zero_vector_token_id is not None:
+                    zero_mask = (gt_tokens[b] == self.zero_vector_token_id)
+                    valid_for_mask = ~zero_mask
+            else:
+                valid_for_mask = torch.ones(N, dtype=torch.bool, device=device)
 
             nodes_to_mask = []
 
@@ -421,17 +476,19 @@ class MaskedTokenPredictor(nn.Module):
                 missing_indices = missing_indices + last_frame_start
 
                 if len(missing_indices) > 0:
+                    # Filter out zero-vector tokens from missing_indices
+                    missing_indices = missing_indices[valid_for_mask[missing_indices]]
                     nodes_to_mask.extend(missing_indices.tolist())
                     num_to_mask = max(1, int(frame_N * self.mask_ratio))
                     remaining_slots = num_to_mask - len(nodes_to_mask)
 
                     if remaining_slots > 0:
-                        # Only consider available nodes in the last frame
+                        # Only consider available nodes in the last frame that are valid for masking
                         all_indices = torch.arange(last_frame_start, last_frame_end, device=device)
                         available_nodes = [
                             idx.item()
                             for idx in all_indices
-                            if idx.item() not in nodes_to_mask
+                            if idx.item() not in nodes_to_mask and valid_for_mask[idx]
                         ]
 
                         if available_nodes:
@@ -442,14 +499,20 @@ class MaskedTokenPredictor(nn.Module):
                             )
                 else:
                     num_to_mask = max(1, int(frame_N * self.mask_ratio))
-                    # Only mask nodes in the last frame
-                    perm = torch.randperm(frame_N, device=device)
-                    nodes_to_mask = (perm[:num_to_mask] + last_frame_start).tolist()
+                    # Only mask nodes in the last frame that are valid
+                    valid_indices = torch.arange(last_frame_start, last_frame_end, device=device)
+                    valid_indices = valid_indices[valid_for_mask[last_frame_start:last_frame_end]]
+                    if len(valid_indices) > 0:
+                        perm = torch.randperm(len(valid_indices), device=device)
+                        nodes_to_mask = valid_indices[perm[:min(num_to_mask, len(valid_indices))]].tolist()
             else:
                 num_to_mask = max(1, int(frame_N * self.mask_ratio))
-                # Only mask nodes in the last frame
-                perm = torch.randperm(frame_N, device=device)
-                nodes_to_mask = (perm[:num_to_mask] + last_frame_start).tolist()
+                # Only mask nodes in the last frame that are valid
+                valid_indices = torch.arange(last_frame_start, last_frame_end, device=device)
+                valid_indices = valid_indices[valid_for_mask[last_frame_start:last_frame_end]]
+                if len(valid_indices) > 0:
+                    perm = torch.randperm(len(valid_indices), device=device)
+                    nodes_to_mask = valid_indices[perm[:min(num_to_mask, len(valid_indices))]].tolist()
 
             if nodes_to_mask:
                 mask_positions[b, nodes_to_mask] = True
@@ -458,26 +521,14 @@ class MaskedTokenPredictor(nn.Module):
 
     def _apply_masking(
         self,
-        graph_data: dict,
         gt_tokens: torch.Tensor,
         mask_positions: torch.Tensor,
-        B: int,
-        N: int,
     ) -> torch.Tensor:
-        """Apply masking to input based on mode.
+
+        masked_input = gt_tokens.clone()
+        mask_token_id = self.vocab_size
+        masked_input[mask_positions] = mask_token_id
         
-        For feature mode, all masked positions get the same mask_feature_embedding.
-        The model should learn to differentiate them via attention to visible context.
-        This preserves permutation invariance for Hungarian matching.
-        """
-        if self.input_mode == "token":
-            masked_input = gt_tokens.clone()
-            mask_token_id = self.vocab_size
-            masked_input[mask_positions] = mask_token_id
-        else:
-            # Feature mode: apply uniform mask_feature_embedding to all masked positions
-            masked_input = graph_data["x"].clone()  # [B, N, feat_dim]
-            
         return masked_input
 
     def _compute_standard_loss(
@@ -486,8 +537,6 @@ class MaskedTokenPredictor(nn.Module):
         gt_tokens: torch.Tensor,
         mask_positions: torch.Tensor,
         useless_mask: Optional[torch.Tensor],
-        B: int,
-        N: int,
         device: torch.device,
     ) -> tuple:
         """Compute standard (non-Hungarian) cross-entropy loss."""

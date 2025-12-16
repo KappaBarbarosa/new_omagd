@@ -90,7 +90,6 @@ class TypeWiseHungarianLoss(torch.nn.Module):
             
             # Split & Pad
             # list of tensors -> Pad -> [M, K_max, V] / [M, K_max]
-            # 這裡必須經過 CPU list 轉換，但在 B=4800 下這比 Python Loop 快得多
             split_lengths = active_lengths.tolist()
             list_log_probs = torch.split(flat_log_probs, split_lengths)
             list_gt = torch.split(flat_gt, split_lengths)

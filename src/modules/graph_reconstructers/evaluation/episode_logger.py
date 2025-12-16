@@ -362,7 +362,6 @@ def print_detailed_episode_full(
             
             obs = obs.to(device)
             full_obs = full_obs.to(device)
-            
             # ========== 2. Build graph data ==========
             pure_graph_data = graph_reconstructer.obs_processor.build_graph_from_obs(obs)
             full_graph_data = graph_reconstructer.obs_processor.build_graph_from_obs(full_obs)
@@ -382,20 +381,6 @@ def print_detailed_episode_full(
             
             obs_tokens = obs_result["node_tokens"]  # [1, N]
             gt_tokens_flat = full_result["node_tokens"]  # [1, N]
-            
-            # Debug: compare pre-VQ embeddings for self node
-            obs_pre_vq = obs_result.get("pre_vq_embeddings")  # [1, N, code_dim]
-            full_pre_vq = full_result.get("pre_vq_embeddings")  # [1, N, code_dim]
-            
-            if obs_pre_vq is not None and full_pre_vq is not None:
-                # Compare self node embeddings
-                obs_self_emb = obs_pre_vq[0, 0]  # [code_dim]
-                full_self_emb = full_pre_vq[0, 0]  # [code_dim]
-                emb_diff = (obs_self_emb - full_self_emb).abs().sum().item()
-                print(f"  DEBUG: Self node encoder embedding diff = {emb_diff:.6f}")
-                if emb_diff > 1e-5:
-                    print(f"    obs_self_emb[:8]:  {obs_self_emb[:8].cpu().tolist()}")
-                    print(f"    full_self_emb[:8]: {full_self_emb[:8].cpu().tolist()}")
             
             if was_training:
                 graph_reconstructer.tokenizer.train()
@@ -486,26 +471,9 @@ def print_detailed_episode_full(
             print(f"Step {t}")
             print(f"{'─' * 100}")
             
-            # Raw observations
-            obs_vals = obs[0].cpu().tolist()
-            full_obs_vals = full_obs[0].cpu().tolist()
-            obs_str = ", ".join([f"{v:.3f}" for v in obs_vals])
-            full_obs_str = ", ".join([f"{v:.3f}" for v in full_obs_vals])
-            print(f"  Obs:      [{obs_str}]")
-            print(f"  Full Obs: [{full_obs_str}]")
-            
             # Graph node features (for debugging)
             obs_graph_x = pure_graph_data["x"][0]  # [N, D]
             full_graph_x = full_graph_data["x"][0]  # [N, D]
-            
-            # Print self node (index 0) features comparison - ALL features
-            obs_self = obs_graph_x[0].cpu().tolist()  # All features of self node
-            gt_self = full_graph_x[0].cpu().tolist()
-            obs_self_str = ", ".join([f"{v:.3f}" for v in obs_self])
-            gt_self_str = ", ".join([f"{v:.3f}" for v in gt_self])
-            self_diff = sum(abs(a - b) for a, b in zip(obs_self, gt_self))
-            print(f"  Graph Self (obs):  [{obs_self_str}] (diff={self_diff:.6f})")
-            print(f"  Graph Self (full): [{gt_self_str}]")
             
             # Print all node features briefly
             node_types_data = pure_graph_data.get("node_types", None)

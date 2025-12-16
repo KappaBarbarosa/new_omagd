@@ -250,6 +250,25 @@ def pretrain_graph_reconstructer(args, runner, learner, buffer, logger):
                 os.makedirs(best_model_path, exist_ok=True)
                 learner.save_graph_reconstructor(best_model_path)
                 logger.console_logger.info(f"[Pretrain] New best model saved (loss: {eval_loss:.4f})")
+            
+            # Print training statistics (Stage 2 only)
+            if stage == 'stage2':
+                from modules.graph_reconstructers.training_stats import (
+                    get_stats_collector, reset_stats_collector,
+                    get_eval_stats_collector, reset_eval_stats_collector
+                )
+                # Training stats
+                stats = get_stats_collector()
+                report = stats.report(epoch)
+                logger.console_logger.info(f"\n{report}")
+                reset_stats_collector()
+                
+                # Eval stats
+                eval_stats = get_eval_stats_collector()
+                eval_report = eval_stats.report(epoch)
+                eval_report = eval_report.replace("TRAINING STATISTICS", "EVALUATION STATISTICS")
+                logger.console_logger.info(f"\n{eval_report}")
+                reset_eval_stats_collector()
     
     logger.console_logger.info(f"[Pretrain] {stage} training completed!")
     
@@ -593,28 +612,27 @@ def run_sequential(args, logger):
     start_time = time.time()
     last_time = start_time
 
+    pretrained_tokenizer_path = getattr(args, 'pretrained_tokenizer_path', '')
+    pretrained_mask_predictor_path = getattr(args, 'pretrained_mask_predictor_path', '')
+    
+    if pretrained_tokenizer_path:
+        logger.console_logger.info(f"Loading tokenizer from {pretrained_tokenizer_path}")
+        print("Loading tokenizer from {}".format(pretrained_tokenizer_path))
+        learner.load_graph_reconstructor(pretrained_tokenizer_path, stage='stage1')
+    
+    if pretrained_mask_predictor_path:
+        logger.console_logger.info(f"Loading mask predictor from {pretrained_mask_predictor_path}")
+        print("Loading mask predictor from {}".format(pretrained_mask_predictor_path))
+        learner.load_graph_reconstructor(pretrained_mask_predictor_path, stage='stage2')
+
     # ========== Graph Reconstructer Pretrain or Evaluation ==========
-    if getattr(args, 'use_graph_reconstruction', False):
-        # Check if evaluation-only mode
-        if getattr(args, 'evaluation_only', False):
-            # Load pretrained models first
-            pretrained_tokenizer_path = getattr(args, 'pretrained_tokenizer_path', '')
-            pretrained_mask_predictor_path = getattr(args, 'pretrained_mask_predictor_path', '')
-            
-            if pretrained_tokenizer_path:
-                logger.console_logger.info(f"Loading tokenizer from {pretrained_tokenizer_path}")
-                learner.load_graph_reconstructor(pretrained_tokenizer_path, stage='stage1')
-            
-            if pretrained_mask_predictor_path:
-                logger.console_logger.info(f"Loading mask predictor from {pretrained_mask_predictor_path}")
-                learner.load_graph_reconstructor(pretrained_mask_predictor_path, stage='stage2')
-            
-            # Run evaluation-only
-            evaluation_only_graph_reconstructer(args, runner, learner, logger)
-            runner.close_env()
-            return
-        else:
-            pretrain_graph_reconstructer(args, runner, learner, buffer, logger)
+    if getattr(args, 'evaluation_only', False):
+        # Run evaluation-only
+        evaluation_only_graph_reconstructer(args, runner, learner, logger)
+        runner.close_env()
+        return
+    else:
+        pretrain_graph_reconstructer(args, runner, learner, buffer, logger)
 
     # logger.console_logger.info("Beginning training for {} timesteps".format(args.t_max))
 

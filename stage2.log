@@ -1,8 +1,8 @@
 ==============================================
  Stage 2: Training Mask Predictor on 3m
- Using tokenizer from: results/models/sc2_3m-obs_aid=1-obs_act=1/algo=omagd-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/omagd__2025-12-14_23-40-23/pretrain_stage1_best
+ Using tokenizer from: results/models/sc2_3m-obs_aid=1-obs_act=1/algo=omagd-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/omagd__2025-12-15_20-12-37/pretrain_stage1_best
 ==============================================
-Supported environments: {'sc2': functools.partial(<function env_fn at 0x7f32b6f9d820>, env=<class 'envs.smac_v1.StarCraft2EnvWrapper.StarCraft2EnvWrapper'>), 'sc2_v2': functools.partial(<function env_fn at 0x7f32b6f9d820>, env=<class 'envs.smac_v2.StarCraft2Env2Wrapper.StarCraft2Env2Wrapper'>)}
+Supported environments: {'sc2': functools.partial(<function env_fn at 0x7f44454dea60>, env=<class 'envs.smac_v1.StarCraft2EnvWrapper.StarCraft2EnvWrapper'>), 'sc2_v2': functools.partial(<function env_fn at 0x7f44454dea60>, env=<class 'envs.smac_v2.StarCraft2Env2Wrapper.StarCraft2Env2Wrapper'>)}
 &&&&&&&&&&&&&&&&&&&&&& n_rnn 28.297K
  &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&& self.batch_device=cpu
 Mixer Size: 

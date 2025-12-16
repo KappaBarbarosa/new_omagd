@@ -174,18 +174,6 @@ class NQGraphLearner(NQLearner):
             self.graph_reconstructer.stage2_model.load_state_dict(
                 th.load(model_path, map_location=lambda storage, loc: storage)
             )
-        
-        # Load optimizer state if exists
-        opt_path = f"{path}/graph_opt.th"
-        try:
-            self.graph_optimizer.load_state_dict(
-                th.load(opt_path, map_location=lambda storage, loc: storage)
-            )
-        except FileNotFoundError:
-            pass
-        
-        self.logger.console_logger.info(f"Loaded graph reconstructer ({stage}) from {path}")
-        
 
     def train(self, batch: EpisodeBatch, t_env: int, episode_num: int):
         start_time = time.time()
