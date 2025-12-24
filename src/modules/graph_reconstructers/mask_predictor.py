@@ -230,7 +230,7 @@ class MaskedTokenPredictor(nn.Module):
         # TODO: Make zero_vector_token_id configurable or auto-detect from tokenizer
         # Currently hardcoded to 293 which is the token for zero-vector features
         # This prevents the model from learning to always predict zero-vector
-        self.zero_vector_token_id = 293
+        self.zero_vector_token_id = 265
 
     def forward(
         self, 
@@ -287,8 +287,7 @@ class MaskedTokenPredictor(nn.Module):
             use_hungarian: If True, use type-wise Hungarian matching loss (order-invariant)
             stacked_frames: Number of stacked frames (default: 1)
             n_nodes_per_frame: Number of nodes per frame (required if stacked_frames > 1)
-            fixed_mask_positions: Optional [B, N] bool tensor - fixed mask positions to use
-                                 If provided, this will be used directly instead of creating new masks
+            validation: Whether in validation mode
 
         Returns:
             dict with "loss" and "logs" containing training metrics
@@ -347,6 +346,7 @@ class MaskedTokenPredictor(nn.Module):
                 mask_positions=mask_positions,
                 node_types=graph_data["node_types"],
                 loss_compute_mask=loss_compute_mask,
+                gt_features=graph_data["x"],  # Pass GT features
             )
         else:
             # Also collect eval statistics
@@ -357,6 +357,7 @@ class MaskedTokenPredictor(nn.Module):
                 mask_positions=mask_positions,
                 node_types=graph_data["node_types"],
                 loss_compute_mask=loss_compute_mask,
+                gt_features=graph_data["x"],  # Pass GT features
             )
         
         # Extract last frame predictions and ground truth for logging
@@ -381,29 +382,45 @@ class MaskedTokenPredictor(nn.Module):
             last_frame_logs = {}
         
         if use_hungarian:
-            loss, hungarian_logs = self.hungarian_loss(
+            # Use per-sample Hungarian loss (useless_mask handled in learner)
+            loss_per_sample, count_per_sample, hungarian_logs = self.hungarian_loss.forward_per_sample(
                 logits=logits,
                 gt_tokens=gt_tokens,
                 node_types=graph_data["node_types"],
-                mask_positions=loss_compute_mask,  # Use loss_mask instead of mask_positions
-                useless_mask=useless_mask,
+                mask_positions=loss_compute_mask,
             )
             accuracy = hungarian_logs["hungarian_accuracy"]
         else:
             loss, accuracy = self._compute_standard_loss(
                 logits, gt_tokens, loss_compute_mask, useless_mask, B, N, device
             )
+            # Wrap scalar as per-sample for compatibility
+            loss_per_sample = loss.expand(B) / B
+            count_per_sample = torch.ones(B, device=device)
             hungarian_logs = {}
 
+        # Compute scalar for logging
+        valid_samples = count_per_sample > 0
+        if valid_samples.any():
+            scalar_loss = loss_per_sample[valid_samples].mean()
+        else:
+            scalar_loss = torch.tensor(0.0, device=device)
+
         logs = {
-            "stage2_loss": loss.item(),
+            "stage2_loss": scalar_loss.item(),
             "predictor_accuracy": accuracy if isinstance(accuracy, float) else accuracy.item(),
         }
         logs.update(hungarian_logs)
         logs.update(last_frame_logs)
         
 
-        return {"loss": loss, "logs": logs, "predicted_tokens": logits.argmax(dim=-1), "mask_positions": mask_positions}
+        return {
+            "loss_per_sample": loss_per_sample,  # [B] for external reduction
+            "count_per_sample": count_per_sample,  # [B] for proper averaging
+            "logs": logs, 
+            "predicted_tokens": logits.argmax(dim=-1), 
+            "mask_positions": mask_positions
+        }
 
     def _create_mask_positions(
         self,
@@ -418,8 +435,12 @@ class MaskedTokenPredictor(nn.Module):
     ) -> torch.Tensor:
         """
         Create mask positions for training.
-        Only masks positions in the last frame when stacked_frames > 1.
-        Excludes zero-vector tokens (uninformative) from masking.
+        
+        Rules:
+        1. NEVER mask SELF node (index 0 in each frame)
+        2. Prioritize missing nodes (from prioritize_missing_mask)
+        3. If count < mask_ratio * frame_N, fill from non-zero tokens
+        4. Only masks positions in the last frame when stacked_frames > 1
         """
         mask_positions = torch.zeros(B, N, dtype=torch.bool, device=device)
         
@@ -427,92 +448,60 @@ class MaskedTokenPredictor(nn.Module):
         if stacked_frames > 1 and n_nodes_per_frame is not None:
             last_frame_start = (stacked_frames - 1) * n_nodes_per_frame
             last_frame_end = N
-            # Only consider nodes in the last frame
             frame_N = n_nodes_per_frame
         else:
-            # Single frame: mask all positions
             last_frame_start = 0
             last_frame_end = N
             frame_N = N
+        
+        # SELF node index in the last frame (always the first node of each frame)
+        self_node_idx = last_frame_start
         
         for b in range(B):
             if useless_mask is not None and useless_mask[b]:
                 continue
             
-            # Get valid nodes (exclude zero-vector tokens if gt_tokens provided)
-            if gt_tokens is not None:
-                # Find the zero-vector token ID (token with highest frequency in invisible nodes)
-                # For now, we detect it as the most common token in positions with all-zero features
-                # This assumes zero-vector maps to a specific token consistently
-                valid_for_mask = torch.ones(N, dtype=torch.bool, device=device)
-                
-                # Exclude nodes in last frame that have zero-vector token
-                # Zero-vector token is typically a specific code (need to detect or configure)
-                # For safety, exclude tokens that appear on non-visible nodes
-                last_frame_tokens = gt_tokens[b, last_frame_start:last_frame_end]
-                
-                # Heuristic: find most frequent token (likely zero-vector)
-                if self.zero_vector_token_id is None:
-                    # Detect zero-vector token as the most common one
-                    unique, counts = torch.unique(last_frame_tokens, return_counts=True)
-                    if len(unique) > 0:
-                        most_common_idx = counts.argmax()
-                        self.zero_vector_token_id = unique[most_common_idx].item()
-                
-                # Exclude zero-vector tokens from masking
-                if self.zero_vector_token_id is not None:
-                    zero_mask = (gt_tokens[b] == self.zero_vector_token_id)
-                    valid_for_mask = ~zero_mask
-            else:
-                valid_for_mask = torch.ones(N, dtype=torch.bool, device=device)
+            # Build valid_for_mask: exclude SELF node and zero-vector tokens
+            valid_for_mask = torch.ones(N, dtype=torch.bool, device=device)
+            
+            # Rule 1: NEVER mask SELF node
+            valid_for_mask[self_node_idx] = False
+            
+            # Rule 2: Exclude zero-vector tokens
+            if gt_tokens is not None and self.zero_vector_token_id is not None:
+                zero_mask = (gt_tokens[b] == self.zero_vector_token_id)
+                valid_for_mask = valid_for_mask & (~zero_mask)
 
             nodes_to_mask = []
+            num_to_mask = max(1, int(frame_N * self.mask_ratio))
 
+            # Step 1: Add missing nodes first (excluding SELF and zero-vector)
             if prioritize_missing_mask is not None:
-                # Only consider missing nodes in the last frame
                 last_frame_prioritize = prioritize_missing_mask[b, last_frame_start:last_frame_end]
-                missing_indices = torch.where(last_frame_prioritize)[0]
-                # Adjust indices to global positions
-                missing_indices = missing_indices + last_frame_start
+                missing_indices = torch.where(last_frame_prioritize)[0] + last_frame_start
+                
+                # Filter: only keep valid positions
+                missing_indices = missing_indices[valid_for_mask[missing_indices]]
+                nodes_to_mask.extend(missing_indices.tolist())
 
-                if len(missing_indices) > 0:
-                    # Filter out zero-vector tokens from missing_indices
-                    missing_indices = missing_indices[valid_for_mask[missing_indices]]
-                    nodes_to_mask.extend(missing_indices.tolist())
-                    num_to_mask = max(1, int(frame_N * self.mask_ratio))
-                    remaining_slots = num_to_mask - len(nodes_to_mask)
-
-                    if remaining_slots > 0:
-                        # Only consider available nodes in the last frame that are valid for masking
-                        all_indices = torch.arange(last_frame_start, last_frame_end, device=device)
-                        available_nodes = [
-                            idx.item()
-                            for idx in all_indices
-                            if idx.item() not in nodes_to_mask and valid_for_mask[idx]
-                        ]
-
-                        if available_nodes:
-                            num_to_add = min(remaining_slots, len(available_nodes))
-                            perm_all = torch.randperm(len(available_nodes), device=device)
-                            nodes_to_mask.extend(
-                                [available_nodes[i] for i in perm_all[:num_to_add]]
-                            )
-                else:
-                    num_to_mask = max(1, int(frame_N * self.mask_ratio))
-                    # Only mask nodes in the last frame that are valid
-                    valid_indices = torch.arange(last_frame_start, last_frame_end, device=device)
-                    valid_indices = valid_indices[valid_for_mask[last_frame_start:last_frame_end]]
-                    if len(valid_indices) > 0:
-                        perm = torch.randperm(len(valid_indices), device=device)
-                        nodes_to_mask = valid_indices[perm[:min(num_to_mask, len(valid_indices))]].tolist()
-            else:
-                num_to_mask = max(1, int(frame_N * self.mask_ratio))
-                # Only mask nodes in the last frame that are valid
-                valid_indices = torch.arange(last_frame_start, last_frame_end, device=device)
-                valid_indices = valid_indices[valid_for_mask[last_frame_start:last_frame_end]]
-                if len(valid_indices) > 0:
-                    perm = torch.randperm(len(valid_indices), device=device)
-                    nodes_to_mask = valid_indices[perm[:min(num_to_mask, len(valid_indices))]].tolist()
+            # Step 2: Fill remaining slots from non-zero tokens (if needed)
+            remaining_slots = num_to_mask - len(nodes_to_mask)
+            if remaining_slots > 0:
+                # Get all valid indices in last frame (excluding already selected)
+                all_indices = torch.arange(last_frame_start, last_frame_end, device=device)
+                available_mask = valid_for_mask[last_frame_start:last_frame_end].clone()
+                
+                # Exclude already selected nodes
+                for idx in nodes_to_mask:
+                    if last_frame_start <= idx < last_frame_end:
+                        available_mask[idx - last_frame_start] = False
+                
+                available_indices = all_indices[available_mask]
+                
+                if len(available_indices) > 0:
+                    num_to_add = min(remaining_slots, len(available_indices))
+                    perm = torch.randperm(len(available_indices), device=device)
+                    nodes_to_mask.extend(available_indices[perm[:num_to_add]].tolist())
 
             if nodes_to_mask:
                 mask_positions[b, nodes_to_mask] = True

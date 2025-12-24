@@ -2,16 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class MLPEncoder(nn.Module):
-    """
-    MLP Encoder for Node-wise Tokenizer
-
-    特点：
-    1. 每个节点独立编码，不受图结构影响
-    2. 相似输入产生相似 embedding
-    3. 解决 GNN 全局感知导致的问题
-    """
-
+class NodeEncoder(nn.Module):
     def __init__(
         self,
         in_dim,

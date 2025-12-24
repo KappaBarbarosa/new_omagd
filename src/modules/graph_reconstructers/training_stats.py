@@ -4,9 +4,11 @@ Collects and reports statistics about:
 1. Token distribution (most common GT tokens)
 2. Missing node patterns (which nodes are masked)
 3. Training batch composition
+4. GT features per token (mean/std)
 """
 
 import torch
+import numpy as np
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional
 from loguru import logger
@@ -15,8 +17,9 @@ from loguru import logger
 class TrainingStatsCollector:
     """Collects statistics during training for debugging."""
     
-    def __init__(self, report_interval: int = 10):
+    def __init__(self, report_interval: int = 10, max_samples_per_token: int = 100):
         self.report_interval = report_interval
+        self.max_samples_per_token = max_samples_per_token  # Limit memory usage
         self.reset()
     
     def reset(self):
@@ -28,13 +31,18 @@ class TrainingStatsCollector:
         self.batch_count = 0
         self.total_masked_tokens = 0
         self.total_tokens = 0
+        
+        # NEW: Feature statistics per token
+        # Store sample features for top tokens (limited to save memory)
+        self.token_features: Dict[int, List[np.ndarray]] = defaultdict(list)
     
     def collect(
         self,
         gt_tokens: torch.Tensor,  # [B, N]
         mask_positions: torch.Tensor,  # [B, N]
         node_types: torch.Tensor,  # [B, N]
-        loss_compute_mask: Optional[torch.Tensor] = None,  # [B, N] 
+        loss_compute_mask: Optional[torch.Tensor] = None,  # [B, N]
+        gt_features: Optional[torch.Tensor] = None,  # [B, N, D] - NEW
     ):
         """Collect statistics from a training batch."""
         B, N = gt_tokens.shape
@@ -65,6 +73,27 @@ class TrainingStatsCollector:
             masked_of_type = mask_flat & type_mask
             self.node_type_mask_counts[node_type]["total"] += type_mask.sum().item()
             self.node_type_mask_counts[node_type]["masked"] += masked_of_type.sum().item()
+        
+        # 5. NEW: Collect features per token (only for masked positions, limited samples)
+        if gt_features is not None:
+            masked_tokens = gt_tokens[mask_positions].cpu()  # [num_masked]
+            masked_feats = gt_features[mask_positions].cpu().numpy()  # [num_masked, D]
+            
+            for tok, feat in zip(masked_tokens.tolist(), masked_feats):
+                if len(self.token_features[tok]) < self.max_samples_per_token:
+                    self.token_features[tok].append(feat)
+    
+    def _compute_token_feature_stats(self, token_id: int) -> Optional[Dict]:
+        """Compute mean/std for a token's features."""
+        if token_id not in self.token_features or len(self.token_features[token_id]) == 0:
+            return None
+        
+        features = np.stack(self.token_features[token_id], axis=0)  # [num_samples, D]
+        return {
+            "mean": features.mean(axis=0),
+            "std": features.std(axis=0),
+            "count": len(features),
+        }
     
     def report(self, epoch: int) -> str:
         """Generate a statistics report."""
@@ -95,7 +124,23 @@ class TrainingStatsCollector:
             pct = count / max(self.total_masked_tokens, 1) * 100
             lines.append(f"  Token {tok}: {count} ({pct:.1f}%)")
         
-        # 4. Node type masking stats
+        # 4. NEW: Feature statistics for top masked tokens
+        lines.append(f"\n🔬 Feature Stats for Top 5 MASKED Tokens:")
+        for tok, count in self.masked_gt_token_counts.most_common(5):
+            stats = self._compute_token_feature_stats(tok)
+            if stats is not None:
+                mean = stats["mean"]
+                std = stats["std"]
+                # Show first 8 dimensions (visible, dist, relx, rely, ...)
+                mean_str = ", ".join([f"{v:.3f}" for v in mean[:8]])
+                std_str = ", ".join([f"{v:.3f}" for v in std[:8]])
+                lines.append(f"  Token {tok} (n={stats['count']}):")
+                lines.append(f"    Mean: [{mean_str}, ...]")
+                lines.append(f"    Std:  [{std_str}, ...]")
+            else:
+                lines.append(f"  Token {tok}: No feature samples collected")
+        
+        # 5. Node type masking stats
         type_names = {0: "SELF", 1: "ALLY", 2: "ENEMY"}
         lines.append(f"\n🔲 Masking by Node Type:")
         for t, name in type_names.items():
@@ -105,7 +150,7 @@ class TrainingStatsCollector:
                 pct = masked / total * 100
                 lines.append(f"  {name}: {masked}/{total} masked ({pct:.1f}%)")
         
-        # 5. Top 5 mask patterns
+        # 6. Top 5 mask patterns
         lines.append(f"\n📐 Top 5 Mask Patterns:")
         for pattern, count in self.mask_pattern_counts.most_common(5):
             # Convert to readable format

@@ -65,6 +65,8 @@ recontructer_stage: "stage1"
 stage2_model_type: "masked_predictor"
 stage2_input_mode: "token"
 
+timestep_weighting: False
+
 # =============================================================================
 # Tokenizer Configuration (Stage 1)
 # =============================================================================
@@ -130,4 +132,4 @@ graph_pretrain_eval_episodes: 40  # Number of NEW episodes to collect for evalua
 # Evaluation-Only Configuration
 # =============================================================================
 evaluation_only: False            # Run evaluation-only mode (no training)
-eval_report_episodes: 3           # Number of episodes for detailed step-by-step logging
+eval_report_episodes: 10           # Number of episodes for detailed step-by-step logging

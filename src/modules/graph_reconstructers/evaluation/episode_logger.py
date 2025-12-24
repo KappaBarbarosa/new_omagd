@@ -147,6 +147,7 @@ def print_detailed_episode(
             # Check if terminated
             terminated = batch["terminated"][:, t]
             if terminated[episode_idx].item():
+                print("Episode terminated")
                 break
             
             # ========== 1. Get observations [B, A, obs_dim] -> [1, obs_dim] ==========
@@ -461,6 +462,7 @@ def print_detailed_episode_full(
             
             # Skip printing if no masked nodes (but still count)
             if n_masked == 0:
+                print("No masked nodes")
                 valid_steps += 1
                 continue
             
@@ -507,7 +509,7 @@ def print_detailed_episode_full(
                 masked_in = result.get('masked_input', gt_tokens)[0].cpu().tolist()
             else:
                 # Reconstruct masked input
-                vocab_size = graph_reconstructer.tokenizer.vocab_size.item()
+                vocab_size = graph_reconstructer.tokenizer.n_codes
                 masked_in = [vocab_size if m else gt_toks[j] for j, m in enumerate(mask_pos_list)]
             
             mask_in_str = " ".join([f"[M]" if m else f"{masked_in[j]:4d}" for j, m in enumerate(mask_pos_list)])

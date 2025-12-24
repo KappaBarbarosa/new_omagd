@@ -1,4 +1,4 @@
-"""Logger for NodeWiseTokenizer - handles detailed logging of reconstruction metrics."""
+"""Logger for Tokenizer - handles detailed logging of reconstruction metrics."""
 
 import torch
 import torch.nn.functional as F

@@ -3,7 +3,7 @@ Graph Discrete Diffusion Model for HARL VQ Architecture
 基於原本 mask_discrete_diffusion.py 架構，適配到 VQ Graph tokens
 
 主要功能：
-1. 處理 NodeWiseTokenizer 產生的 discrete tokens [B, N]
+1. 處理 Tokenizer 產生的 discrete tokens [B, N]
 2. 實現完整的 discrete diffusion 流程 (forward/reverse process)
 3. 支持複雜的節點感知 masking 策略
 4. 與 HARL VQ 訓練框架兼容

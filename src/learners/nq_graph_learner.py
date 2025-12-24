@@ -27,11 +27,49 @@ class NQGraphLearner(NQLearner):
         )
         self.graph_log_stats_t = 0
         self.graph_train_steps = 0
+    
+    def _reduce_per_sample_loss(
+        self,
+        loss_per_sample: th.Tensor,  # [B]
+        useless_mask: th.Tensor,     # [B]
+        time_steps: th.Tensor = None,  # [B]
+        max_time_steps: int = None,
+    ) -> th.Tensor:
+        """
+        Unified reduction of per-sample loss with useless_mask and temporal weighting.
         
-        # Load pretrained weights if specified
-        pretrained_tokenizer_path = getattr(args, 'pretrained_tokenizer_path', '')
-        if pretrained_tokenizer_path and args.recontructer_stage == 'stage2':
-            self.load_pretrained_tokenizer(pretrained_tokenizer_path)
+        Args:
+            loss_per_sample: [B] per-sample loss
+            useless_mask: [B] bool tensor, True = invalid sample to exclude
+            time_steps: [B] optional time step indices for temporal weighting
+            max_time_steps: maximum time steps for weight calculation
+            
+        Returns:
+            scalar loss
+        """
+        device = loss_per_sample.device
+        
+        # 1. Create valid mask (inverse of useless_mask)
+        valid_mask = ~useless_mask  # [B]
+        num_valid = valid_mask.sum()
+        
+        if num_valid == 0:
+            return th.tensor(0.0, device=device, requires_grad=True)
+        
+        # 2. Apply temporal weighting (optional, controlled by config)
+        use_timestep_weighting = getattr(self.args, 'timestep_weighting', False)
+        if use_timestep_weighting and time_steps is not None and max_time_steps is not None:
+            # Warmup strategy: weight = min(1, t / warmup_steps)
+            warmup_steps = max(1, max_time_steps // 4)  # First 25% has reduced weight
+            time_weights = (time_steps.float() / warmup_steps).clamp(min=0.1, max=1.0)  # [B]
+        else:
+            time_weights = th.ones_like(loss_per_sample)
+        
+        # 3. Apply masks and weights, then reduce
+        weighted_loss = loss_per_sample * valid_mask.float() * time_weights
+        final_loss = weighted_loss.sum() / num_valid.float()
+        
+        return final_loss
     
     def train_graph_reconstructor(self, batch: EpisodeBatch, t_env: int, epoch: int = 0):
         """Train graph reconstructer (Stage 1: tokenizer or Stage 2: mask predictor)."""
@@ -56,17 +94,24 @@ class NQGraphLearner(NQLearner):
         full_obs_flat = full_obs.reshape(-1, D)
         
         # Reshape mask to match graph data: [B, T, 1] -> [B*T*N]
-        # Expand to cover all agents: [B, T, 1] -> [B, T, N] -> [B*T*N]
         mask_expanded = mask.expand(B, T, N)  # [B, T, N]
         mask_flat = mask_expanded.reshape(-1)  # [B*T*N]
         useless_mask = (mask_flat == 0)       # True for invalid samples
         
-        # Compute loss with mask
-        loss, loss_info = self.graph_reconstructer.compute_loss(
+        # Create time_steps tensor: [B*T*N] where each element is the time step index
+        time_steps = th.arange(T, device=obs.device).unsqueeze(0).unsqueeze(-1)  # [1, T, 1]
+        time_steps = time_steps.expand(B, T, N).reshape(-1)  # [B*T*N]
+        
+        # Compute per-sample loss from graph reconstructer
+        loss_per_sample, loss_info = self.graph_reconstructer.compute_loss(
             obs_flat, full_obs_flat, 
-            useless_mask=useless_mask,
             training=True,
             device=self.args.device
+        )  # loss_per_sample: [B*T*N]
+        
+        # Unified reduction: apply useless_mask and time_steps weighting
+        loss = self._reduce_per_sample_loss(
+            loss_per_sample, useless_mask, time_steps, T
         )
         
         # Backprop
@@ -120,15 +165,25 @@ class NQGraphLearner(NQLearner):
         mask_flat = mask_expanded.reshape(-1)
         useless_mask = (mask_flat == 0)
         
-        # Compute loss with training=False for evaluation
+        # Evaluation mode: all modules eval, no gradient
         self.graph_reconstructer.eval()
-        loss, loss_info = self.graph_reconstructer.compute_loss(
-            obs_flat, full_obs_flat,
-            useless_mask=useless_mask,
-            training=False,
-            device=self.args.device
-        )
-        self.graph_reconstructer.train()
+        
+        with th.no_grad():
+            loss_per_sample, loss_info = self.graph_reconstructer.compute_loss(
+                obs_flat, full_obs_flat,
+                training=False,
+                device=self.args.device
+            )
+        
+        # Restore training mode per stage (stage1: tokenizer.train, stage2: predictor.train)
+        self.graph_reconstructer.set_training_stage(self.graph_reconstructer.training_stage)
+        
+        # Simple reduction with useless_mask only (no time weighting in eval)
+        valid_mask = ~useless_mask
+        if valid_mask.sum() > 0:
+            loss = (loss_per_sample * valid_mask.float()).sum() / valid_mask.sum().float()
+        else:
+            loss = th.tensor(0.0, device=loss_per_sample.device)
         
         return loss.item(), loss_info
     

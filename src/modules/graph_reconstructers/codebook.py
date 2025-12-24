@@ -56,7 +56,7 @@ class VectorQuantizer(nn.Module):
         Returns:
           z_q_st: [N, D] straight-through quantized vectors (for forward)
           z_id  : [N]    code indices
-          loss  : scalar  commitment loss only (EMA handles codebook updates)
+          loss_per_sample: [N] per-sample commitment loss
           metrics: dict   {'perplexity', 'usage', 'commit_loss', 'codebook_norm'}
           z_q   : [N, D] quantized vectors (non-ST, for analysis)
         """
@@ -66,17 +66,18 @@ class VectorQuantizer(nn.Module):
             z_id = torch.argmin(dist, dim=1)  # [N]
         z_q = self.embedding(z_id)  # [N, D]
 
-        # 2) VQ-VAE standard losses
-        # Commitment loss: ||encoder(x) - codebook||^2 (gradients flow to encoder)
-        commit_loss = F.mse_loss(h, z_q.detach())
+        # 2) VQ-VAE commitment loss: per-sample [N]
+        # ||encoder(x) - codebook||^2 per sample
+        commit_loss_per_sample = F.mse_loss(h, z_q.detach(), reduction="none").mean(dim=-1)  # [N]
+        commit_loss_scalar = commit_loss_per_sample.mean()  # for logging
 
         # 3) EMA update for codebook (no gradient)
         if training:
             with torch.no_grad():
                 self._ema_update(h, z_id)
 
-        # 4) total loss (commitment loss helps encoder learn to be close to codebook)
-        total_loss = self.commitment_weight * commit_loss
+        # 4) per-sample loss (with commitment weight)
+        loss_per_sample = self.commitment_weight * commit_loss_per_sample  # [N]
 
         # straight-through estimator
         z_q_st = h + (z_q - h).detach()
@@ -107,11 +108,11 @@ class VectorQuantizer(nn.Module):
             "perplexity": perplexity.item(),
             "usage_mean": usage.mean().item(),
             "usage_nonzero": (usage > 0).float().mean().item(),
-            "commit_loss": commit_loss.item(),
+            "commit_loss": commit_loss_scalar.item(),
             "codebook_norm": codebook_norm.item(),
         }
 
-        return z_q_st, z_id, total_loss, metrics, z_q
+        return z_q_st, z_id, loss_per_sample, metrics, z_q
 
     @torch.no_grad()
     def _ema_update(self, h: torch.Tensor, z_id: torch.Tensor):

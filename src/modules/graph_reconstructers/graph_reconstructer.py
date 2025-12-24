@@ -3,28 +3,14 @@
 import torch
 import torch.nn as nn
 from typing import Dict, Tuple, Optional, Any
-from contextlib import contextmanager
 from loguru import logger
 
-
 from modules.graph_reconstructers.obs_processor import ObsProcessor
-from modules.graph_reconstructers.node_wise_tokenizer import NodeWiseTokenizer
+from modules.graph_reconstructers.node_wise_tokenizer import Tokenizer
 from modules.graph_reconstructers.graph_discrete_diffusion import GraphDiscreteDiffusion
 from modules.graph_reconstructers.mask_predictor import MaskedTokenPredictor
 from utils.graph_utils import _identify_missing_nodes
 from modules.graph_reconstructers.mask_predictor_logger import evaluation
-
-
-@contextmanager 
-def temporary_eval_mode(module: nn.Module):
-    """Temporarily set module to eval mode."""
-    was_training = module.training
-    try:
-        module.eval()
-        yield
-    finally:
-        if was_training:
-            module.train()
 
 
 class GraphReconstructer(nn.Module):
@@ -38,9 +24,6 @@ class GraphReconstructer(nn.Module):
         self.tokenizer_config = self.args.tokenizer_config
         self.mask_predictor_config = self.args.mask_predictor_config
 
-        # Observation processor
-        # args.obs_shape is int: 55
-        # args.obs_componnent is list: [4, (6, 5), (4, 5), 1]
         self.obs_processor = ObsProcessor(
             args=args,
             obs_component=args.obs_component,
@@ -49,30 +32,20 @@ class GraphReconstructer(nn.Module):
 
 
         # Stage 2 configuration
-        self.stage2_model_type = args.stage2_model_type
         self.stage2_input_mode = args.stage2_input_mode
         
-        logger.info(f"🎯 [STAGE2-MODEL] Using model type: {self.stage2_model_type}")
 
         # Training stage
         self.training_stage = args.recontructer_stage
 
         node_feature_dim = self.obs_processor.node_feature_dim
 
-        self.tokenizer = NodeWiseTokenizer(in_dim=node_feature_dim, **self.tokenizer_config)
-
-        if self.stage2_model_type == "diffusion":
-            self.stage2_model = GraphDiscreteDiffusion(
-                vocab_size=self.tokenizer.vocab_size.item(), **self.diffusion_config
-            )
-        elif self.stage2_model_type == "masked_predictor":
-            self.stage2_model = MaskedTokenPredictor(
-                vocab_size=self.tokenizer.vocab_size.item(),
+        self.tokenizer = Tokenizer(in_dim=node_feature_dim, **self.tokenizer_config)
+        self.stage2_model = MaskedTokenPredictor(
+                vocab_size=self.tokenizer.n_codes,
                 input_mode=self.stage2_input_mode,
                 **self.mask_predictor_config
             )
-        else:
-            raise ValueError(f"Unknown stage2_model_type: {self.stage2_model_type}")
         self._log_initialization()
         self.set_training_stage(self.training_stage)
 
@@ -86,7 +59,7 @@ class GraphReconstructer(nn.Module):
 
         logger.info("🚀 [VQ-DIFFUSION] Model initialized!")
         logger.info(f"  Total params: {total_params:,}, Tokenizer: {tokenizer_params:,}, Stage2: {stage2_params:,}")
-        logger.info(f"  Node dim: {self.obs_processor.node_feature_dim}, Vocab: {self.tokenizer.vocab_size.item()}")
+        logger.info(f"  Node dim: {self.obs_processor.node_feature_dim}, Vocab: {self.tokenizer.n_codes}")
 
     # ==================== Reshape Helpers ====================
 
@@ -152,24 +125,26 @@ class GraphReconstructer(nn.Module):
         self,
         obs_batch: torch.Tensor,
         full_obs_batch: torch.Tensor,
-        useless_mask: torch.Tensor = None,
         training: bool = True,
         device: str = "cuda",
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """
         Compute reconstruction loss for graph reconstructer.
         
+        Returns per-sample loss [B] for external reduction with useless_mask and time weighting.
+        
         Args:
             obs_batch: [B, obs_dim] pure observation (with range limit)
             full_obs_batch: [B, obs_dim] full observation (no range limit)
-            useless_mask: [B] optional mask, True = invalid sample
             training: whether in training mode
             device: device to use
+            
+        Returns:
+            loss_per_sample: [B] per-sample loss
+            loss_info: dict with metrics
         """
         obs_batch = obs_batch.to(device)
         full_obs_batch = full_obs_batch.to(device)
-        if useless_mask is not None:
-            useless_mask = useless_mask.to(device)
         
         # Reshape BEFORE obs_processor (if needed)
         obs_batch = self._reshape_obs_for_processor(obs_batch)
@@ -179,22 +154,16 @@ class GraphReconstructer(nn.Module):
         pure_graph_data = self.obs_processor.build_graph_from_obs(obs_batch)
         full_graph_data = self.obs_processor.build_graph_from_obs(full_obs_batch)
         
-        # Use external useless_mask if provided, otherwise use auto-computed one
-        if useless_mask is not None:
-            # Override the auto-computed useless_mask
-            full_graph_data["useless_mask"] = useless_mask
-            pure_graph_data["useless_mask"] = useless_mask
-        
         if self.training_stage == "stage1":
             # Stage 1: Train tokenizer directly with [B*F, N, D]
             loss_result = self.tokenizer.compute_loss(full_graph_data, training=training)
-            loss = loss_result["loss"]
+            loss_per_sample = loss_result["loss_per_sample"]  # [B]
             loss_info = loss_result["logs"]
 
         elif self.training_stage == "stage2":
             
             # Get tokens: [B*F, N]
-            with torch.no_grad(), temporary_eval_mode(self.tokenizer):
+            with torch.no_grad():
                 gt_tokens_flat = self._forward_stage1(full_graph_data)
             
             # Reshape #2: BEFORE Stage 2 model: [B*F, N] -> [B, F*N]
@@ -208,16 +177,17 @@ class GraphReconstructer(nn.Module):
             missing_mask = self._get_last_frame_mask(missing_mask)
 
             # Compute loss (only on last frame's missing nodes)
+            # Compute per-sample loss from mask predictor
             stage2_loss_result = self.stage2_model.compute_loss(
                 graph_data=full_graph_stage2,
                 gt_tokens=gt_tokens,
-                useless_mask=full_graph_stage2.get("useless_mask"),
                 prioritize_missing_mask=missing_mask,
                 stacked_frames=self.stacked_frames if self.use_stacked_frames else 1,
                 n_nodes_per_frame=self.n_nodes_per_frame if self.use_stacked_frames else None,
                 validation=not training,
             )
-            loss = stage2_loss_result["loss"]
+            # Now returns per-sample loss directly
+            loss_per_sample = stage2_loss_result["loss_per_sample"]  # [B]
             loss_info = stage2_loss_result["logs"]
             
             # Evaluate token reconstruction quality (only during validation)
@@ -226,7 +196,7 @@ class GraphReconstructer(nn.Module):
                 mask_positions = stage2_loss_result["mask_positions"]  # [B, F*N]
                 
                 # Decode tokens to features using frozen tokenizer
-                with torch.no_grad(), temporary_eval_mode(self.tokenizer):
+                with torch.no_grad():
                     # Get embeddings from tokens
                     predicted_features = self.tokenizer.decode_from_tokens(predicted_tokens)  # [B, F*N, D]
                     gt_features = self.tokenizer.decode_from_tokens(gt_tokens)  # [B, F*N, D]
@@ -255,73 +225,32 @@ class GraphReconstructer(nn.Module):
         else:
             raise ValueError(f"Unknown training stage: {self.training_stage}")
     
-        return loss, loss_info
+        return loss_per_sample, loss_info
     
     # ==================== Training Stage ====================
 
     def set_training_stage(self, stage: str):
         self.training_stage = stage
         if stage == "stage1":
-            self.unfreeze_tokenizer()
-            self.freeze_stage2_model()
+            print("freeze stage2 model")
         elif stage == "stage2":
-            self.freeze_tokenizer()
-            self.unfreeze_stage2_model()
-        else:
-            raise ValueError(f"Unknown stage: {stage}")
+            print("freeze stage1 model")
+        self.freeze_tokenizer(isfreeze= stage == "stage2")
+        self.freeze_stage2_model(isfreeze= stage == "stage1")
 
-    def freeze_tokenizer(self):
+    def freeze_tokenizer(self, isfreeze=True):
         for param in self.tokenizer.parameters():
-            param.requires_grad = False
-        self.tokenizer.eval()
+            param.requires_grad = not isfreeze
+        self.tokenizer.eval() if isfreeze else self.tokenizer.train()
 
-    def unfreeze_tokenizer(self):
-        for param in self.tokenizer.parameters():
-            param.requires_grad = True
-        self.tokenizer.train()
-
-    def freeze_stage2_model(self):
+    def freeze_stage2_model(self, isfreeze=True):
         if self.stage2_model:
             for param in self.stage2_model.parameters():
-                param.requires_grad = False
-            self.stage2_model.eval()
-
-    def unfreeze_stage2_model(self):
-        if self.stage2_model:
-            for param in self.stage2_model.parameters():
-                param.requires_grad = True
-            self.stage2_model.train()
-
-    # ==================== Parameters ====================
-
+                param.requires_grad = not isfreeze
+            self.stage2_model.eval() if isfreeze else self.stage2_model.train()
+    
     def get_stage_parameters(self):
-        return filter(lambda p: p.requires_grad, self.parameters())
-
-    def get_tokenizer_parameters(self):
-        return filter(lambda p: p.requires_grad, self.tokenizer.parameters())
-
-    def get_stage2_parameters(self):
-        if self.stage2_model:
-            return filter(lambda p: p.requires_grad, self.stage2_model.parameters())
-        else:
-            logger.warning("⚠️ [STAGE-WISE] No stage2 model, returning empty parameters")
-            return iter([])
-
-    def get_diffusion_parameters(self):
-        return self.get_stage2_parameters()
-
-    # ==================== Utilities ====================
-
-    def get_training_metrics(self) -> Dict[str, Any]:
-        return {
-            "architecture_type": self.architecture_type,
-            "stage2_model_type": self.stage2_model_type,
-            "stacked_frames": self.stacked_frames,
-        }
-
-    def get_training_stats(self) -> Dict[str, Any]:
-        return self.get_training_metrics()
-
-    def set_graph_feature_info(self, feature_info: Dict[str, Any]):
-        self.feature_info.update(feature_info)
-        self.obs_processor.feature_info.update(feature_info)
+        if self.training_stage == "stage1":
+            return self.tokenizer.parameters()
+        elif self.training_stage == "stage2":
+            return self.stage2_model.parameters()
