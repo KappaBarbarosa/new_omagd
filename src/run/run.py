@@ -48,7 +48,7 @@ def run(_run, _config, _log):
                           ]
     env_name = args.env
     logdir = env_name
-    if env_name in ["sc2", "sc2_v2", ]:
+    if env_name in ["sc2", "sc2_v2" ]:
         logdir = os.path.join("{}_{}-obs_aid={}-obs_act={}".format(
             logdir,
             args.env_args["map_name"],
@@ -195,6 +195,7 @@ def run_sequential(args, logger):
     scheme = {
         "state": {"vshape": env_info["state_shape"]},
         "obs": {"vshape": env_info["obs_shape"], "group": "agents"},
+        "full_obs": {"vshape": env_info["obs_shape"], "group": "agents"},
         "actions": {"vshape": (1,), "group": "agents", "dtype": th.long},
         "avail_actions": {"vshape": (env_info["n_actions"],), "group": "agents", "dtype": th.int},
         "probs": {"vshape": (env_info["n_actions"],), "group": "agents", "dtype": th.float},

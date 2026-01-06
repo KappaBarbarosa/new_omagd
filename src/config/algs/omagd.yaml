@@ -106,7 +106,7 @@ mask_predictor_config:
   
   # Training parameters
   mask_ratio: 0.15          # Masking ratio (0.10-0.30, BERT standard is 0.15)
-  stacked_steps: 3
+  stacked_steps: 0
   stacked_strip: 1
   
   # but can be overridden here if needed
@@ -129,11 +129,6 @@ graph_pretrain_eval_episodes: 40  # Number of NEW episodes to collect for evalua
 evaluation_only: False            # Run evaluation-only mode (no training)
 eval_report_episodes: 10           # Number of episodes for detailed step-by-step logging
 save_pretrain_buffer: False
-
-# Balanced buffer for Stage 2 (pre-filtered, token-capped)
-# If provided, skips episode collection and uses DataLoader-based training
-# balanced_buffer_path: ""
-# balanced_buffer_path: "/home/marl2025/new_omagd/results/buffers/sc2_3m-obs_aid=1-obs_act=1/balanced_stacked_buffer.pt"
-
+pretrain_only: False
 # Raw episode buffer path (for Stage 1 or if balanced buffer not available)
-pretrain_buffer_path: "/home/marl2025/new_omagd/results/buffers/sc2_3m-obs_aid=1-obs_act=1/algo=omagd_origin-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/pretrain_buffer_3m_5000.pt"
+# pretrain_buffer_path: "/home/marl2025/new_omagd/results/buffers/sc2_3m-obs_aid=1-obs_act=1/algo=omagd_origin-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/pretrain_buffer_3m_5000.pt"

@@ -21,10 +21,12 @@ class NQGraphLearner(NQLearner):
         
         # Optimizer for graph reconstructer
         graph_lr = getattr(args, 'graph_lr', 0.001)
-        self.graph_optimizer = Adam(
-            self.graph_reconstructer.get_stage_parameters(),
-            lr=graph_lr
-        )
+        graph_params = self.graph_reconstructer.get_stage_parameters()
+        if graph_params:
+            self.graph_optimizer = Adam(
+                graph_params,
+                lr=graph_lr
+            ) 
         self.graph_log_stats_t = 0
         self.graph_train_steps = 0
     

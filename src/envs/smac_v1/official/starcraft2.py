@@ -96,7 +96,6 @@ class StarCraft2Env(MultiAgentEnv):
         heuristic_ai=False,
         heuristic_rest=False,
         debug=False,
-        return_full_obs=False,
     ):
         """
         Create a StarCraftC2Env environment.
@@ -193,8 +192,6 @@ class StarCraft2Env(MultiAgentEnv):
         debug: bool, optional
             Log messages about observations, state, actions and rewards for
             debugging purposes (default is False).
-        return_full_obs: bool, optional
-            Whether or not to return the full observation (default is False).
         """
         # Map arguments
         self.map_name = map_name
@@ -238,7 +235,6 @@ class StarCraft2Env(MultiAgentEnv):
         self.heuristic_ai = heuristic_ai
         self.heuristic_rest = heuristic_rest
         self.debug = debug
-        self.return_full_obs = return_full_obs
         self.window_size = (window_size_x, window_size_y)
         self.replay_dir = replay_dir
         self.replay_prefix = replay_prefix

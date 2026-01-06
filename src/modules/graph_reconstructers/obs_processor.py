@@ -70,6 +70,82 @@ class ObsProcessor:
             obs.dtype,
         )
 
+    def flatten_graph_to_obs(self, graph_data):
+        """
+        Convert graph node features back to flat observation vector.
+        This is the inverse of build_graph_from_obs().
+        
+        Args:
+            graph_data: dict with:
+                - x: [B, num_nodes, node_feat_dim] node features
+                - node_types: [B, num_nodes] node types (0=SELF, 1=ALLY, 2=ENEMY)
+                
+        Returns:
+            obs: [B, obs_dim] flat observation vector
+            
+        Layout (SMAC order):
+            move_feats → enemy_feats → ally_feats → own_feats
+        """
+        x = graph_data["x"]  # [B, N, node_feat_dim]
+        B = x.shape[0]
+        device = x.device
+        dtype = x.dtype
+        
+        # Extract SELF node (index 0)
+        self_node = x[:, 0, :]  # [B, node_feat_dim]
+        # SELF layout: [visible(1), dist(1), relx(1), rely(1), move_feats, own_feats, padding]
+        # Skip visible + dist_rel (4 values)
+        move_feats = self_node[:, 4:4 + self.move_feat_dim]  # [B, move_feat_dim]
+        own_feats = self_node[:, 4 + self.move_feat_dim:4 + self.move_feat_dim + self.own_feat_dim]  # [B, own_feat_dim]
+        
+        # Extract ALLY nodes (indices 1 to 1+n_allies)
+        ally_nodes = x[:, self.ally_start_idx:self.ally_start_idx + self.n_allies, :]  # [B, n_allies, node_feat_dim]
+        # ALLY layout: [visible, dist, relx, rely, stats...]
+        ally_feats = ally_nodes[:, :, :self.ally_feat_dim]  # [B, n_allies, ally_feat_dim]
+        ally_flat = ally_feats.reshape(B, -1)  # [B, n_allies * ally_feat_dim]
+        
+        # Extract ENEMY nodes (indices 1+n_allies to end)
+        # Note: In _build_graphs, order is [self, ally, enemy], but we need to check
+        # Actually looking at build_graph_from_obs again, enemies come before allies:
+        # all_nodes = torch.cat([self_nodes, ally_nodes, enemy_nodes], dim=1)
+        # So: SELF at 0, ALLY at 1 to n_allies, ENEMY at n_allies+1 to end
+        # But wait - in line 144: [self_nodes, ally_nodes, enemy_nodes]
+        # Let me check indices again...
+        # self.ally_start_idx = 1 + self.n_enemies (line 23) - this is WRONG for the cat order!
+        # Line 144: torch.cat([self_nodes, ally_nodes, enemy_nodes], dim=1)
+        # So ally is at index 1, enemy is at index 1+n_allies
+        # But line 23 says: self.ally_start_idx = 1 + self.n_enemies
+        # This looks inconsistent. Let me check _build_graphs more carefully...
+        # Line 143-145:
+        #   self_nodes = self_nodes.unsqueeze(1)
+        #   all_nodes = torch.cat([self_nodes, ally_nodes, enemy_nodes], dim=1)
+        # Wait, but ally is extracted from lines 112-124 and enemy from 126-138
+        # The cat order is [self, ally, enemy]
+        # So ally_start = 1, enemy_start = 1 + n_allies
+        # But line 22-23 says:
+        #   self.enemy_start_idx = 1
+        #   self.ally_start_idx = 1 + self.n_enemies
+        # This is inconsistent with the actual concatenation order!
+        # The code has a bug - the indices don't match the cat order.
+        # For now, I'll follow the actual concatenation order in _build_graphs.
+        
+        # Actual order from _build_graphs: [self, ally, enemy]
+        actual_ally_start = 1
+        actual_enemy_start = 1 + self.n_allies
+        
+        ally_nodes = x[:, actual_ally_start:actual_ally_start + self.n_allies, :]  # [B, n_allies, node_feat_dim]
+        ally_feats = ally_nodes[:, :, :self.ally_feat_dim]  # [B, n_allies, ally_feat_dim]
+        ally_flat = ally_feats.reshape(B, -1)  # [B, n_allies * ally_feat_dim]
+        
+        enemy_nodes = x[:, actual_enemy_start:actual_enemy_start + self.n_enemies, :]  # [B, n_enemies, node_feat_dim]
+        enemy_feats = enemy_nodes[:, :, :self.enemy_feat_dim]  # [B, n_enemies, enemy_feat_dim]
+        enemy_flat = enemy_feats.reshape(B, -1)  # [B, n_enemies * enemy_feat_dim]
+        
+        # Concatenate in SMAC order: move_feats → enemy_feats → ally_feats → own_feats
+        obs = torch.cat([move_feats, enemy_flat, ally_flat, own_feats], dim=1)
+        
+        return obs
+
     def _build_graphs(
         self,
         B,

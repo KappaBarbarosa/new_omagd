@@ -404,7 +404,7 @@ def _run_detailed_episode_logging(args, runner, learner, logger, detailed_episod
             batch=batch,
             graph_reconstructer=learner.graph_reconstructer,
             stacked_steps=stacked_steps,
-            stacked_strip=stacked_strip if stacked_steps > 1 else None,
+            # stacked_strip=stacked_strip if stacked_steps > 1 else None,
             n_nodes_per_frame=learner.graph_reconstructer.n_nodes_per_frame,
             episode_num=i + 1,
             agent_idx=0,
@@ -563,78 +563,93 @@ def run_sequential(args, logger):
         evaluation_only_graph_reconstructer(args, runner, learner, logger)
         runner.close_env()
         return
-    else:
+    elif getattr(args, 'pretrain_only', True):
+        # Stage 1/2 pretrain only (default behavior)
         pretrain_graph_reconstructer(args, runner, learner, buffer, logger)
+        runner.close_env()
+        logger.console_logger.info("Pretrain completed. Set pretrain_only=False to run Stage 3.")
+        sys.stdout.flush()
+        time.sleep(10)
+        return
 
-
-    # stage 3: original training 
+    # ========== Stage 3: QMIX Training with Reconstructed Observations ==========
+    logger.console_logger.info("=" * 60)
+    logger.console_logger.info("=== Stage 3: QMIX Training with Graph Reconstruction ===")
+    logger.console_logger.info("=" * 60)
     
-    #  episode = 0
-    # last_test_T = -args.test_interval - 1
-    # last_log_T = 0
-    # model_save_time = 0
+    # Setup graph reconstruction for MAC (if using NGraphMAC)
+    if hasattr(mac, 'set_graph_reconstructer'):
+        mac.set_graph_reconstructer(learner.graph_reconstructer)
+        logger.console_logger.info("[Stage 3] Graph reconstructer enabled for MAC")
+    
+    # Freeze graph reconstructer during Stage 3 (default)
+    freeze_graph = getattr(args, 'recontructer_stage', 'stage0') == 'stage3'
+    if freeze_graph:
+        learner.graph_reconstructer.eval()
+        for param in learner.graph_reconstructer.parameters():
+            param.requires_grad = False
+        logger.console_logger.info("[Stage 3] Graph reconstructer frozen")
+    
+    episode = 0
+    last_test_T = -args.test_interval - 1
+    last_log_T = 0
+    model_save_time = 0
 
-    # start_time = time.time()
-    # last_time = start_time
+    start_time = time.time()
+    last_time = start_time
 
-    # logger.console_logger.info("Beginning training for {} timesteps".format(args.t_max))
+    logger.console_logger.info("Beginning training for {} timesteps".format(args.t_max))
 
-    # while runner.t_env <= args.t_max:
-    #     # Run for a whole episode at a time
-    #     with th.no_grad():
-    #         # t_start = time.time()
-    #         episode_batch = runner.run(test_mode=False)
-    #         if episode_batch.batch_size > 0:  # After clearing the batch data, the batch may be empty.
-    #             buffer.insert_episode_batch(episode_batch)
-    #         # print("Sample new batch cost {} seconds.".format(time.time() - t_start))
-    #         episode += args.batch_size_run
+    while runner.t_env <= args.t_max:
+        # Run for a whole episode at a time
+        with th.no_grad():
+            episode_batch = runner.run(test_mode=False)
+            if episode_batch.batch_size > 0:
+                buffer.insert_episode_batch(episode_batch)
+            episode += args.batch_size_run
 
-    #     if buffer.can_sample(args.batch_size):
-    #         if args.accumulated_episodes and episode % args.accumulated_episodes != 0:
-    #             continue
+        if buffer.can_sample(args.batch_size):
+            if args.accumulated_episodes and episode % args.accumulated_episodes != 0:
+                continue
 
-    #         episode_sample = buffer.sample(args.batch_size)
+            episode_sample = buffer.sample(args.batch_size)
 
-    #         # Truncate batch to only filled timesteps
-    #         max_ep_t = episode_sample.max_t_filled()
-    #         episode_sample = episode_sample[:, :max_ep_t]
+            # Truncate batch to only filled timesteps
+            max_ep_t = episode_sample.max_t_filled()
+            episode_sample = episode_sample[:, :max_ep_t]
 
-    #         if episode_sample.device != args.device:
-    #             episode_sample.to(args.device)
+            if episode_sample.device != args.device:
+                episode_sample.to(args.device)
 
-    #         learner.train(episode_sample, runner.t_env, episode)
-    #         del episode_sample
+            learner.train(episode_sample, runner.t_env, episode)
+            del episode_sample
 
-    #     # Execute test runs once in a while
-    #     n_test_runs = max(1, args.test_nepisode // runner.batch_size)
-    #     if (runner.t_env - last_test_T) / args.test_interval >= 1.0:
-    #         logger.console_logger.info("t_env: {} / {}".format(runner.t_env, args.t_max))
-    #         logger.console_logger.info("Estimated time left: {}. Time passed: {}".format(
-    #             time_left(last_time, last_test_T, runner.t_env, args.t_max), time_str(time.time() - start_time)))
-    #         last_time = time.time()
-    #         last_test_T = runner.t_env
-    #         with th.no_grad():
-    #             for _ in range(n_test_runs):
-    #                 runner.run(test_mode=True)
+        # Execute test runs once in a while
+        n_test_runs = max(1, args.test_nepisode // runner.batch_size)
+        if (runner.t_env - last_test_T) / args.test_interval >= 1.0:
+            logger.console_logger.info("t_env: {} / {}".format(runner.t_env, args.t_max))
+            logger.console_logger.info("Estimated time left: {}. Time passed: {}".format(
+                time_left(last_time, last_test_T, runner.t_env, args.t_max), time_str(time.time() - start_time)))
+            last_time = time.time()
+            last_test_T = runner.t_env
+            with th.no_grad():
+                for _ in range(n_test_runs):
+                    runner.run(test_mode=True)
 
-    #     if args.save_model and (
-    #             runner.t_env - model_save_time >= args.save_model_interval or runner.t_env >= args.t_max):
-    #         model_save_time = runner.t_env
-    #         save_path = os.path.join(args.local_results_path, "models", args.log_model_dir, args.unique_token,
-    #                                  str(runner.t_env))
-    #         # "results/models/{}".format(unique_token)
-    #         os.makedirs(save_path, exist_ok=True)
-    #         logger.console_logger.info("Saving models to {}".format(save_path))
+        if args.save_model and (
+                runner.t_env - model_save_time >= args.save_model_interval or runner.t_env >= args.t_max):
+            model_save_time = runner.t_env
+            save_path = os.path.join(args.local_results_path, "models", args.log_model_dir, args.unique_token,
+                                     str(runner.t_env))
+            os.makedirs(save_path, exist_ok=True)
+            logger.console_logger.info("Saving models to {}".format(save_path))
+            learner.save_models(save_path)
 
-    #         # learner should handle saving/loading -- delegate actor save/load to mac,
-    #         # use appropriate filenames to do critics, optimizer states
-    #         learner.save_models(save_path)
-
-    #     if (runner.t_env - last_log_T) >= args.log_interval:
-    #         logger.log_stat("episode", episode, runner.t_env)
-    #         logger.log_stat("episode_in_buffer", buffer.episodes_in_buffer, runner.t_env)
-    #         logger.print_recent_stats()
-    #         last_log_T = runner.t_env
+        if (runner.t_env - last_log_T) >= args.log_interval:
+            logger.log_stat("episode", episode, runner.t_env)
+            logger.log_stat("episode_in_buffer", buffer.episodes_in_buffer, runner.t_env)
+            logger.print_recent_stats()
+            last_log_T = runner.t_env
 
     runner.close_env()
     logger.console_logger.info("Finished Training")

@@ -242,6 +242,85 @@ class GraphReconstructer(nn.Module):
         """Stage 1: Encode to tokens. Input/output: [B*F, N, D] -> [B*F, N]"""
         return self.tokenizer.encode_to_tokens(graph_data)["node_tokens"]
 
+    def reconstruct_obs(
+        self,
+        obs: torch.Tensor,
+        device: str = "cuda",
+    ) -> torch.Tensor:
+        """
+        Reconstruct full observation from partial observation (Stage 3 inference).
+        
+        Pipeline:
+        1. Build graph from obs
+        2. Encode to tokens via tokenizer
+        3. Identify positions to predict (tokens == zero_vector_token_id)
+        4. Predict those tokens via mask predictor
+        5. Decode tokens to node features
+        6. Flatten back to obs format
+        
+        Note: We cannot use missing_mask here because we don't have access to
+        full_obs during inference. Instead, we detect positions with zero-vector
+        tokens (invisible/dead units produce zero features -> zero-vector token).
+        
+        Args:
+            obs: [B, obs_dim] partial observation (visible nodes only)
+            device: target device
+            
+        Returns:
+            reconstructed_obs: [B, obs_dim] reconstructed observation with predicted missing info
+        """
+        obs = obs.to(device)
+        B = obs.shape[0]
+        
+        # 1. Build graph from obs
+        graph_data = self.obs_processor.build_graph_from_obs(obs)
+        # graph_data["x"]: [B, N, feat_dim]
+        # graph_data["node_types"]: [B, N]
+        
+        # 2. Encode to tokens
+        with torch.no_grad():
+            tokens = self._forward_stage1(graph_data)  # [B, N]
+        
+        # 3. Identify positions to predict: tokens that are zero-vector token
+        # (invisible/dead units have zero features -> mapped to zero_vector_token_id)
+        zero_token_id = self.stage2_model.zero_vector_token_id
+        to_predict_mask = (tokens == zero_token_id)  # [B, N] bool
+        
+        # 4. Predict tokens for zero-vector positions
+        with torch.no_grad():
+            token_graph_data = {
+                "x": tokens,  # [B, N] token IDs
+                "node_types": graph_data["node_types"],  # [B, N]
+            }
+            predicted_tokens = self.stage2_model.predict(
+                token_graph_data,
+                missing_mask=to_predict_mask,
+            )  # [B, N]
+        
+        # 5. Decode tokens to node features
+        with torch.no_grad():
+            # Decode all tokens (both original and predicted)
+            reconstructed_features = self.tokenizer.decode_from_tokens(predicted_tokens)  # [B*N, feat_dim]
+            N = graph_data["x"].shape[1]
+            feat_dim = self.obs_processor.node_feature_dim
+            reconstructed_features = reconstructed_features.view(B, N, feat_dim)  # [B, N, feat_dim]
+        
+        # 6. Merge: keep original for non-zero tokens, use predicted for zero-vector tokens
+        original_features = graph_data["x"]  # [B, N, feat_dim]
+        final_features = original_features.clone()
+        # Replace zero-vector token positions with reconstructed features
+        to_predict_mask_expanded = to_predict_mask.unsqueeze(-1).expand_as(final_features)  # [B, N, feat_dim]
+        final_features[to_predict_mask_expanded] = reconstructed_features[to_predict_mask_expanded]
+        
+        # 7. Flatten back to obs format
+        reconstructed_graph = {
+            "x": final_features,
+            "node_types": graph_data["node_types"],
+        }
+        reconstructed_obs = self.obs_processor.flatten_graph_to_obs(reconstructed_graph)
+        
+        return reconstructed_obs
+
     # ==================== Loss Computation ====================
 
     def compute_loss(
@@ -476,3 +555,5 @@ class GraphReconstructer(nn.Module):
             return self.tokenizer.parameters()
         elif self.training_stage == "stage2":
             return self.stage2_model.parameters()
+        else:
+            return None

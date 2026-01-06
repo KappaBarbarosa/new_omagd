@@ -124,6 +124,41 @@ class MaskedTokenPredictor(nn.Module):
     def forward(self, graph_data: dict, timestep: torch.Tensor = None) -> torch.Tensor:
         return self.prediction_head(self.encoder(graph_data, timestep=timestep))
 
+    def predict(
+        self,
+        graph_data: dict,
+        missing_mask: torch.Tensor,
+        timestep: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """
+        Predict tokens for missing positions (inference mode).
+        
+        Args:
+            graph_data: {"x": [B, N] token IDs, "node_types": [B, N]}
+            missing_mask: [B, N] bool - True = position to predict
+            timestep: [B] or [B, N] optional timestep indices
+            
+        Returns:
+            output_tokens: [B, N] with missing positions filled by predictions
+        """
+        input_tokens = graph_data["x"].clone()
+        
+        # Mask missing positions with [MASK] token
+        input_tokens[missing_mask] = self.vocab_size  # [MASK] token
+        
+        # Forward pass
+        masked_data = {"x": input_tokens, "node_types": graph_data["node_types"]}
+        logits = self.forward(masked_data, timestep=timestep)  # [B, N, vocab_size]
+        
+        # Get predictions for all positions
+        predicted_tokens = logits.argmax(dim=-1)  # [B, N]
+        
+        # Fill only missing positions
+        output_tokens = graph_data["x"].clone()
+        output_tokens[missing_mask] = predicted_tokens[missing_mask]
+        
+        return output_tokens
+
     def compute_loss(
         self,
         graph_data: dict,
