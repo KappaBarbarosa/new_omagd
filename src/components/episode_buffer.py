@@ -89,6 +89,7 @@ class EpisodeBatch:
         for k, v in self.data.episode_data.items():
             self.data.episode_data[k] = v.to(device)
         self.device = device
+        return self  # Enable method chaining like PyTorch tensors
 
     def update(self, data, bs=slice(None), ts=slice(None), mark_filled=True):
         slices = self._parse_slices((bs, ts))
@@ -269,6 +270,68 @@ class ReplayBuffer(EpisodeBatch):
         else:
             # Return the latest
             return self[self.buffer_index - batch_size: self.buffer_index]
+
+    def save(self, save_path):
+        """Save replay buffer to disk.
+        
+        Args:
+            save_path: Path to save the buffer file (.pt extension recommended)
+        """
+        save_data = {
+            'transition_data': {k: v.cpu() for k, v in self.data.transition_data.items()},
+            'episode_data': {k: v.cpu() for k, v in self.data.episode_data.items()},
+            'buffer_index': self.buffer_index,
+            'episodes_in_buffer': self.episodes_in_buffer,
+            'scheme': self.scheme,
+            'groups': self.groups,
+            'buffer_size': self.buffer_size,
+            'max_seq_length': self.max_seq_length,
+        }
+        th.save(save_data, save_path)
+        print(f"[ReplayBuffer] Saved {self.episodes_in_buffer} episodes to {save_path}")
+    
+    def load(self, load_path, strict=True):
+        """Load replay buffer from disk.
+        
+        Args:
+            load_path: Path to the saved buffer file
+            strict: If True, validate that saved scheme matches current scheme
+            
+        Returns:
+            True if load was successful, False otherwise
+        """
+        import os
+        if not os.path.exists(load_path):
+            print(f"[ReplayBuffer] Buffer file not found: {load_path}")
+            return False
+        
+        save_data = th.load(load_path, map_location='cpu')
+        
+        # Validate scheme compatibility if strict mode
+        if strict:
+            saved_keys = set(save_data['scheme'].keys())
+            current_keys = set(self.scheme.keys())
+            if saved_keys != current_keys:
+                print(f"[ReplayBuffer] Warning: Scheme mismatch!")
+                print(f"  Saved keys: {saved_keys}")
+                print(f"  Current keys: {current_keys}")
+                print(f"  Missing: {current_keys - saved_keys}")
+                print(f"  Extra: {saved_keys - current_keys}")
+                return False
+        
+        # Restore data
+        for k, v in save_data['transition_data'].items():
+            if k in self.data.transition_data:
+                self.data.transition_data[k] = v.to(self.device)
+        for k, v in save_data['episode_data'].items():
+            if k in self.data.episode_data:
+                self.data.episode_data[k] = v.to(self.device)
+        
+        self.buffer_index = save_data['buffer_index']
+        self.episodes_in_buffer = save_data['episodes_in_buffer']
+        
+        print(f"[ReplayBuffer] Loaded {self.episodes_in_buffer} episodes from {load_path}")
+        return True
 
     def __repr__(self):
         return "ReplayBuffer. {}/{} episodes. Keys:{} Groups:{}".format(self.episodes_in_buffer,

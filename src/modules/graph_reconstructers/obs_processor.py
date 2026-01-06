@@ -1,6 +1,4 @@
 import torch
-from harl.utils.envs_tools import check  # type: ignore
-
 
 class ObsProcessor:
     def __init__(self, args, obs_component):
@@ -45,7 +43,6 @@ class ObsProcessor:
             - SELF node contains: [visible=1, dist=0, relx=0, rely=0, move_feats, own_feats]
             - ALLY/ENEMY nodes contain: [visible, dist, relx, rely, stats...]
         """
-        obs = check(obs).float()
         B = obs.shape[0]
 
         # Extract segments per SMAC layout for all batches

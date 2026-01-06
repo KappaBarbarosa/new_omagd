@@ -15,10 +15,9 @@ def evaluation(
     mask_positions: torch.Tensor,
     masked_input: torch.Tensor,
     graph_data: dict,
-    stacked_frames: int,
+    stacked_steps: int,
     n_nodes_per_frame: Optional[int],
     useless_mask: Optional[torch.Tensor],
-    input_mode: str = "token",
     vocab_size: Optional[int] = None,
     validation: bool = False,
     use_hungarian: bool = False,
@@ -31,8 +30,8 @@ def evaluation(
     device = logits.device
 
     # --- 1. Slice last frame ---
-    if stacked_frames > 1 and n_nodes_per_frame is not None:
-        last_frame_start = (stacked_frames - 1) * n_nodes_per_frame
+    if stacked_steps > 1 and n_nodes_per_frame is not None:
+        last_frame_start = (stacked_steps - 1) * n_nodes_per_frame
         last_frame_end = N
     else:
         last_frame_start = 0
@@ -136,11 +135,8 @@ def evaluation(
             rank = ranks[idx].item()
             
             # Get masked input token (if token mode)
-            if input_mode == "token" and lf_masked_input.dim() >= 2:
-                # Find which position this corresponds to in target_mask
-                mask_idx = lf_masked_input[target_mask][idx].item() if target_mask.sum() > idx else vocab_size
-            else:
-                mask_idx = "[MASK]"
+            mask_idx = lf_masked_input[target_mask][idx].item() if target_mask.sum() > idx else vocab_size
+
             
             # Top-k info
             top3_toks = top_k_results[3][0][idx].cpu().tolist() if 3 in top_k_results else []

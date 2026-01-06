@@ -18,7 +18,7 @@ def compute_stage2_metrics(
     mask_positions: torch.Tensor,
     masked_input: torch.Tensor,
     graph_data: dict,
-    stacked_frames: int,
+    stacked_steps: int,
     n_nodes_per_frame: Optional[int],
     useless_mask: Optional[torch.Tensor] = None,
     validation: bool = False,
@@ -37,7 +37,7 @@ def compute_stage2_metrics(
         mask_positions: [B, N] mask for masked positions
         masked_input: [B, N] masked input tokens
         graph_data: dict with node_types, etc.
-        stacked_frames: number of stacked frames
+        stacked_steps: number of stacked frames
         n_nodes_per_frame: nodes per frame
         useless_mask: [B] optional mask for invalid samples
         validation: whether in validation mode
@@ -50,8 +50,8 @@ def compute_stage2_metrics(
     device = logits.device
 
     # --- 1. Slice last frame ---
-    if stacked_frames > 1 and n_nodes_per_frame is not None:
-        last_frame_start = (stacked_frames - 1) * n_nodes_per_frame
+    if stacked_steps > 1 and n_nodes_per_frame is not None:
+        last_frame_start = (stacked_steps - 1) * n_nodes_per_frame
         last_frame_end = N
     else:
         last_frame_start = 0

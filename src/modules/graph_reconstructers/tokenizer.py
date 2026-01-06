@@ -18,42 +18,32 @@ class Tokenizer(nn.Module):
 
     def __init__(
         self,
-        in_dim=16,
-        hid=64,  # 匹配 GraphMAE hidden_dim
-        code_dim=32,  # 匹配 GraphMAE encoding_dim
-        n_codes=1024,  # 減少codebook大小以提高穩定性
-        decay=0.9,  # 降低EMA decay，讓codebook更新更積極
-        commitment_weight=1.0,  # 標準VQ-VAE commitment weight
+        in_dim=16, 
+        code_dim=32,
+        n_codes=1024, 
+        decay=0.9,
+        commitment_weight=1.0,
         use_cosine=False,
-        # 編碼器配置
-        encoder_type="original",  # "gat", "gcn", "gin", "mlp", "linear", "original"
-        encoder_hid=64,  # encoder隱藏層維度
-        encoder_layers=2,  # encoder層數
-        dropout=0.1,  # dropout率
-        decoder_type="mlp",  # "mlp" or "gnn"
-        decoder_hid=64,  # decoder隱藏層維度
-        decoder_layers=2,  # decoder層數
+        encoder_hid=64,  
+        encoder_layers=2,  
+        dropout=0.1, 
+        decoder_hid=64, 
+        decoder_layers=2, 
         revive_threshold=0.01,
     ):
         super().__init__()
 
-        # 保存配置
-        self.encoder_type = encoder_type
         self.in_dim = in_dim
-        self.hid = hid
         self.code_dim = code_dim
         self.use_cosine = use_cosine
         self.n_codes = n_codes
 
         self.enc = NodeEncoder(
             in_dim=in_dim,
-            hid=hid,
+            hid=encoder_hid,
             out_dim=code_dim,
             num_layers=encoder_layers,
             dropout=dropout,
-            activation="relu",
-            residual=True,
-            norm="layer",
             use_cosine=use_cosine,
         )
 
@@ -66,7 +56,7 @@ class Tokenizer(nn.Module):
             revive_threshold=revive_threshold,
         )
 
-        self.node_dec = NodeDecoder(code_dim, in_dim, hid=decoder_hid)
+        self.node_dec = NodeDecoder(code_dim, in_dim, hid=decoder_hid, decoder_layers=decoder_layers)
 
     def encode_to_tokens(self, data):
         """

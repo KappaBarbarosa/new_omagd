@@ -45,7 +45,7 @@ per_beta: 0.4
 return_priority: False
 
 #name: "qmix_env= 8_adam_td_lambda"
-name: "omagd"
+name: "omagd_origin"
 use_wandb: False
 
 # =============================================================================
@@ -63,16 +63,13 @@ recontructer_stage: "stage1"
 
 # Stage 2 model type: "diffusion" or "masked_predictor"
 stage2_model_type: "masked_predictor"
-stage2_input_mode: "token"
-
-timestep_weighting: False
+early_step_weight: 1.0
 
 # =============================================================================
 # Tokenizer Configuration (Stage 1)
 # =============================================================================
 tokenizer_config:
   # Core VQ parameters
-  hid: 64                    # Hidden layer dimension
   code_dim: 32               # Token embedding dimension (VQ codebook dimension)
   n_codes: 1024              # Vocabulary size (number of codes in codebook)
   
@@ -83,13 +80,11 @@ tokenizer_config:
   revive_threshold: 0.05     # Threshold for reviving dead codes
   
   # Encoder configuration
-  encoder_type: "mlp"        # Options: "mlp", "linear", "gnn", "gat", "gcn", "gin"
   encoder_hid: 64            # Encoder hidden dimension
   encoder_layers: 2          # Number of encoder layers
   dropout: 0.1               # Dropout rate
   
   # Decoder configuration
-  decoder_type: "mlp"        # Options: "mlp" or "gnn"
   decoder_hid: 64           # Decoder hidden dimension
   decoder_layers: 2          # Number of decoder layers
 
@@ -111,19 +106,19 @@ mask_predictor_config:
   
   # Training parameters
   mask_ratio: 0.15          # Masking ratio (0.10-0.30, BERT standard is 0.15)
+  stacked_steps: 3
+  stacked_strip: 1
   
-  # Input mode (should match stage2_input_mode)
-  # Note: This is typically set automatically based on stage2_input_mode
   # but can be overridden here if needed
 pretrained_mask_predictor_path: ""
 
 # =============================================================================
 # Pretrain Configuration
 # =============================================================================
-graph_pretrain_episodes: 5000     # Episodes to collect before pretrain
+graph_pretrain_episodes: 10000     # Episodes to collect before pretrain
 graph_pretrain_epochs: 100       # Training epochs for pretrain
-graph_pretrain_batch_size: 32     # Batch size for pretrain (defaults to batch_size if not set)
-graph_lr: 0.005                   # Learning rate for graph reconstructer
+graph_pretrain_batch_size: 16     # Batch size for pretrain (defaults to batch_size if not set)
+graph_lr: 0.0005                   # Learning rate for graph reconstructer
 graph_pretrain_log_interval: 1   # Log interval during pretrain (epochs)
 graph_pretrain_eval_interval: 20  # Evaluation interval (epochs)
 graph_pretrain_eval_episodes: 40  # Number of NEW episodes to collect for evaluation
@@ -133,3 +128,12 @@ graph_pretrain_eval_episodes: 40  # Number of NEW episodes to collect for evalua
 # =============================================================================
 evaluation_only: False            # Run evaluation-only mode (no training)
 eval_report_episodes: 10           # Number of episodes for detailed step-by-step logging
+save_pretrain_buffer: False
+
+# Balanced buffer for Stage 2 (pre-filtered, token-capped)
+# If provided, skips episode collection and uses DataLoader-based training
+# balanced_buffer_path: ""
+# balanced_buffer_path: "/home/marl2025/new_omagd/results/buffers/sc2_3m-obs_aid=1-obs_act=1/balanced_stacked_buffer.pt"
+
+# Raw episode buffer path (for Stage 1 or if balanced buffer not available)
+pretrain_buffer_path: "/home/marl2025/new_omagd/results/buffers/sc2_3m-obs_aid=1-obs_act=1/algo=omagd_origin-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/pretrain_buffer_3m_5000.pt"

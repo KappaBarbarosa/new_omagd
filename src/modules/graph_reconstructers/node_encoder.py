@@ -28,7 +28,6 @@ class NodeEncoder(nn.Module):
             # 线性层
             layers.append(nn.Linear(current_dim, hid))
 
-            # 激活函数
             if activation == "relu":
                 layers.append(nn.ReLU())
             elif activation == "prelu":

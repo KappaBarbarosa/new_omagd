@@ -108,7 +108,7 @@ def print_detailed_episode_stage1(
 def print_detailed_episode(
     batch,
     graph_reconstructer,
-    stacked_frames: int = 1,
+    stacked_steps: int = 1,
     n_nodes_per_frame: Optional[int] = None,
     episode_num: int = 1,
     logger=None,
@@ -185,7 +185,7 @@ def print_detailed_episode(
             missing_mask = _identify_missing_nodes(pure_graph_stage2, full_graph_stage2)  # [1, F*N]
             
             # Get last frame mask only
-            if graph_reconstructer.use_stacked_frames:
+            if graph_reconstructer.use_stacked_steps:
                 missing_mask = graph_reconstructer._get_last_frame_mask(missing_mask)
             
             # ========== 6. Run Stage 2 prediction ==========
@@ -194,7 +194,7 @@ def print_detailed_episode(
                 gt_tokens=gt_tokens,
                 useless_mask=full_graph_stage2.get("useless_mask"),
                 prioritize_missing_mask=missing_mask,
-                stacked_frames=stacked_frames,
+                stacked_steps=stacked_steps,
                 n_nodes_per_frame=n_nodes_per_frame,
                 validation=True,
             )
@@ -309,7 +309,7 @@ def print_detailed_episode(
 def print_detailed_episode_full(
     batch,
     graph_reconstructer,
-    stacked_frames: int = 1,
+    stacked_steps: int = 1,
     n_nodes_per_frame: Optional[int] = None,
     episode_num: int = 1,
     agent_idx: int = 0,
@@ -344,6 +344,7 @@ def print_detailed_episode_full(
     total_masked = 0
     total_nodes_all = 0  # Total nodes across all steps
     total_missing_all = 0  # Total missing nodes across all steps
+    no_mask_step_count = 0
     
     with torch.no_grad():
         for t in range(max_t):
@@ -394,7 +395,7 @@ def print_detailed_episode_full(
             _, pure_graph_stage2 = graph_reconstructer._reshape_for_stage2(obs_tokens, pure_graph_data)
             missing_mask = _identify_missing_nodes(pure_graph_stage2, full_graph_stage2)
             
-            if graph_reconstructer.use_stacked_frames:
+            if graph_reconstructer.use_stacked_steps:
                 missing_mask = graph_reconstructer._get_last_frame_mask(missing_mask)
             
             # ========== 6. Run Stage 2 prediction ==========
@@ -403,7 +404,7 @@ def print_detailed_episode_full(
                 gt_tokens=gt_tokens,
                 useless_mask=full_graph_stage2.get("useless_mask"),
                 prioritize_missing_mask=missing_mask,
-                stacked_frames=stacked_frames,
+                stacked_steps=stacked_steps,
                 n_nodes_per_frame=n_nodes_per_frame,
                 validation=True,
             )
@@ -462,7 +463,7 @@ def print_detailed_episode_full(
             
             # Skip printing if no masked nodes (but still count)
             if n_masked == 0:
-                print("No masked nodes")
+                no_mask_step_count += 1
                 valid_steps += 1
                 continue
             
@@ -550,6 +551,7 @@ def print_detailed_episode_full(
     print(f"EPISODE {episode_num} SUMMARY")
     print("=" * 100)
     print(f"  Total Valid Steps: {valid_steps}")
+    print(f"  No Mask Steps: {no_mask_step_count}/ {valid_steps}")
     print(f"  Missing Node Ratio: {total_missing_all}/{total_nodes_all} = {missing_ratio:.4f} ({missing_ratio*100:.1f}%)")
     print(f"  Overall Accuracy:  {total_correct}/{total_masked} = {total_correct / max(total_masked, 1):.4f}")
     print(f"  Avg Pred→Real MSE: {sum(all_pred_mse) / max(len(all_pred_mse), 1):.4f}")
@@ -557,3 +559,181 @@ def print_detailed_episode_full(
     print(f"  Avg GT→Real MSE:   {sum(all_gt_mse) / max(len(all_gt_mse), 1):.4f} (baseline)")
     print(f"  Avg GT→Real Cos:   {sum(all_gt_cosim) / max(len(all_gt_cosim), 1):.4f} (baseline)")
     print("=" * 100 + "\n")
+
+
+def print_detailed_episode_stacked(
+    batch,
+    graph_reconstructer,
+    stacked_steps: int = 1,
+    stacked_strip: int = 1,
+    n_nodes_per_frame: Optional[int] = None,
+    episode_num: int = 1,
+    agent_idx: int = 0,
+    logger=None,
+):
+    """
+    Print detailed episode data with proper frame stacking support.
+    
+    For each timestep t, collects frames [t-(k-1)*s, ..., t-s, t] where k=stacked_steps, s=stacked_strip.
+    Early timesteps with insufficient history are padded with first available frame.
+    
+    Only shows info for the LAST frame in the stacked sequence (the prediction target).
+    """
+    device = next(graph_reconstructer.parameters()).device
+    max_t = batch.max_t_filled()
+    episode_idx = 0
+    k = stacked_steps
+    s = stacked_strip
+    N = n_nodes_per_frame or graph_reconstructer.n_nodes_per_frame
+    
+    print("\n" + "=" * 100)
+    print(f"EPISODE {episode_num} - Agent {agent_idx} (Stacked: k={k}, strip={s})")
+    print("=" * 100)
+    
+    total_correct = 0
+    total_masked = 0
+    valid_steps = 0
+    
+    with torch.no_grad():
+        for t in range(max_t - 1):  # -1 because we exclude last timestep like Q-learning
+            # Check if terminated
+            terminated = batch["terminated"][:, t]
+            if terminated[episode_idx].item():
+                break
+            
+            # ========== 1. Collect stacked frames [t-(k-1)*s, ..., t] ==========
+            frame_indices = []
+            for i in range(k):
+                idx = t - (k - 1 - i) * s
+                idx = max(0, idx)  # Pad with first frame if insufficient history
+                frame_indices.append(idx)
+            
+            # Get observations for all frames [k, obs_dim]
+            obs_frames = []
+            full_obs_frames = []
+            for idx in frame_indices:
+                obs_t = batch["obs"][episode_idx, idx, agent_idx]  # [obs_dim]
+                full_obs_t = batch["full_obs"][episode_idx, idx, agent_idx] if "full_obs" in batch.scheme else obs_t
+                obs_frames.append(obs_t)
+                full_obs_frames.append(full_obs_t)
+            
+            # Stack: [k, obs_dim]
+            stacked_obs = torch.stack(obs_frames, dim=0).to(device)  # [k, D]
+            stacked_full_obs = torch.stack(full_obs_frames, dim=0).to(device)  # [k, D]
+            
+            # ========== 2. Build stacked input and GT ==========
+            # Input: all frames use pure_obs
+            # GT: frames 0..k-2 use pure_obs, frame k-1 uses full_obs
+            stacked_input = stacked_obs.clone()  # [k, D]
+            stacked_gt = stacked_obs.clone()  # [k, D]
+            stacked_gt[-1] = stacked_full_obs[-1]  # Last frame GT from full_obs
+            
+            # Add batch dim: [1, k, D]
+            stacked_input = stacked_input.unsqueeze(0)
+            stacked_gt = stacked_gt.unsqueeze(0)
+            
+            # ========== 3. Process through graph_reconstructer ==========
+            # Flatten [1, k, D] -> [k, D] for obs_processor
+            obs_flat = stacked_input.reshape(k, -1)
+            gt_flat = stacked_gt.reshape(k, -1)
+            
+            # Build graph data [k, N, feat]
+            pure_graph = graph_reconstructer.obs_processor.build_graph_from_obs(obs_flat)
+            full_graph = graph_reconstructer.obs_processor.build_graph_from_obs(gt_flat)
+            
+            # Get tokens [k, N]
+            pure_tokens = graph_reconstructer._forward_stage1(pure_graph)
+            full_tokens = graph_reconstructer._forward_stage1(full_graph)
+            
+            # Reshape to [1, k*N]
+            input_tokens = pure_tokens.reshape(1, k * N)
+            gt_tokens = full_tokens.reshape(1, k * N)
+            node_types = pure_graph["node_types"].reshape(1, k * N)
+            
+            # Missing mask: only last frame
+            pure_x_last = pure_graph["x"][-1:]  # [1, N, feat]
+            full_x_last = full_graph["x"][-1:]
+            missing_last = _identify_missing_nodes({"x": pure_x_last}, {"x": full_x_last})  # [1, N]
+            
+            missing_mask = torch.zeros(1, k * N, dtype=torch.bool, device=device)
+            missing_mask[:, (k-1)*N:] = missing_last
+            
+            # ========== 4. Run prediction ==========
+            graph_data = {"x": input_tokens, "node_types": node_types}
+            result = graph_reconstructer.stage2_model.compute_loss(
+                graph_data=graph_data,
+                gt_tokens=gt_tokens,
+                prioritize_missing_mask=missing_mask,
+                stacked_steps=k,
+                n_nodes_per_frame=N,
+                validation=True,
+            )
+            
+            pred_tokens = result["predicted_tokens"]  # [1, k*N]
+            mask_positions = result["mask_positions"]  # [1, k*N]
+            
+            # ========== 5. Extract tokens for ALL frames ==========
+            n_masked_last = 0
+            correct_last = 0
+            
+            for f in range(k):
+                start = f * N
+                end = (f + 1) * N
+                mask_pos_f = mask_positions[0, start:end].cpu().tolist()
+                gt_toks_f = gt_tokens[0, start:end].cpu().tolist()
+                pred_toks_f = pred_tokens[0, start:end].cpu().tolist()
+                
+                n_masked_f = sum(mask_pos_f)
+                correct_f = sum(1 for j in range(N) if mask_pos_f[j] and gt_toks_f[j] == pred_toks_f[j])
+                
+                n_masked_last += n_masked_f
+                correct_last += correct_f
+            
+            step_acc = correct_last / max(n_masked_last, 1)
+            total_correct += correct_last
+            total_masked += n_masked_last
+            
+            # ========== 6. Print (only every 10 steps + first 5) ==========
+            if t < 5 or t % 10 == 0:
+                print(f"\n--- Step {t} (frames: {frame_indices}) ---")
+                
+                # Show ALL frames
+                for f in range(k):
+                    start = f * N
+                    end = (f + 1) * N
+                    
+                    input_toks_f = input_tokens[0, start:end].cpu().tolist()
+                    gt_toks_f = gt_tokens[0, start:end].cpu().tolist()
+                    pred_toks_f = pred_tokens[0, start:end].cpu().tolist()
+                    mask_pos_f = mask_positions[0, start:end].cpu().tolist()
+                    
+                    # Frame label
+                    frame_label = f"Frame {f}" if f < k - 1 else f"Frame {f} (TARGET)"
+                    print(f"  [{frame_label}]")
+                    
+                    input_str = " ".join([f"{tok:4d}" for tok in input_toks_f])
+                    gt_str = " ".join([f"{tok:4d}" for tok in gt_toks_f])
+                    pred_str = " ".join([f"{tok:4d}" for tok in pred_toks_f])
+                    mask_str = " ".join(["[M]" if m else f"{input_toks_f[j]:4d}" for j, m in enumerate(mask_pos_f)])
+                    
+                    print(f"    Input:  [{input_str}]")
+                    print(f"    Masked: [{mask_str}]")
+                    print(f"    GT:     [{gt_str}]")
+                    print(f"    Pred:   [{pred_str}]")
+                    
+                    # Match indicators
+                    match_list = ["✓" if gt_toks_f[j] == pred_toks_f[j] else "✗" for j in range(N)]
+                    match_str = " ".join([f" {m} " if mask_pos_f[j] else " - " for j, m in enumerate(match_list)])
+                    print(f"    Match:  [{match_str}]")
+                
+                print(f"  Total Accuracy: {correct_last}/{n_masked_last} = {step_acc:.3f}")
+            
+            valid_steps += 1
+    
+    # Summary
+    print("\n" + "=" * 100)
+    print(f"EPISODE {episode_num} SUMMARY (Stacked k={k})")
+    print(f"  Total Steps: {valid_steps}")
+    print(f"  Overall Accuracy: {total_correct}/{total_masked} = {total_correct / max(total_masked, 1):.4f}")
+    print("=" * 100 + "\n")
+

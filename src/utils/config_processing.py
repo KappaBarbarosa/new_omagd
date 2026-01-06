@@ -21,7 +21,6 @@ def ensure_graph_reconstruction_config(config_dict):
         'graph_reconstruction_weight': 0.1,
         'graph_training_stage': 'stage1',
         'stage2_model_type': 'masked_predictor',
-        'stage2_input_mode': 'token',
     }
     
     # 设置基础配置默认值
@@ -166,10 +165,6 @@ def validate_graph_reconstruction_config(config_dict):
         stage2_type = config_dict.get('stage2_model_type', 'masked_predictor')
         if stage2_type not in ['diffusion', 'masked_predictor']:
             errors.append(f"Invalid stage2_model_type: {stage2_type}. Must be 'diffusion' or 'masked_predictor'")
-        
-        stage2_input = config_dict.get('stage2_input_mode', 'token')
-        if stage2_input not in ['token', 'feature']:
-            errors.append(f"Invalid stage2_input_mode: {stage2_input}. Must be 'token' or 'feature'")
         
         # 检查tokenizer配置
         if 'tokenizer_config' not in config_dict:

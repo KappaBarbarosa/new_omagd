@@ -3,7 +3,7 @@ import torch.nn as nn
 
 class NodeDecoder(nn.Module):
     def __init__(
-        self, code_dim: int, out_dim: int, hid: int = 128, dropout: float = 0.0
+        self, code_dim: int, out_dim: int, hid: int = 128, dropout: float = 0.0, decoder_layers: int = 2
     ):
         super().__init__()
         self.net = nn.Sequential(
@@ -13,5 +13,5 @@ class NodeDecoder(nn.Module):
             nn.Linear(hid, out_dim),
         )
 
-    def forward(self, z):  # z: [N, code_dim]
-        return self.net(z)  # x_hat: [N, out_dim] (對齊 data.x 的維度)
+    def forward(self, z):  
+        return self.net(z) 
