@@ -16,6 +16,10 @@ from runners import REGISTRY as r_REGISTRY
 from controllers import REGISTRY as mac_REGISTRY
 from components.episode_buffer import ReplayBuffer
 from components.transforms import OneHot
+from utils.distributed import (
+    is_main_process, get_rank, get_world_size, barrier, 
+    reduce_tensor, wrap_model_ddp, unwrap_model
+)
 
 from tqdm import tqdm
 
@@ -129,6 +133,9 @@ def pretrain_graph_reconstructer(args, runner, learner, buffer, logger):
     Pretrain graph reconstructer before MAC training.
     Stage 1: Train tokenizer (VQ-VAE)
     Stage 2: Train mask predictor (with frozen tokenizer)
+    
+    Supports multi-GPU training with DistributedDataParallel.
+    Data is collected only on main process and broadcasted to all ranks.
     """
     stage = getattr(args, 'recontructer_stage', 'stage1')
     pretrain_episodes = getattr(args, 'graph_pretrain_episodes', args.buffer_size)
@@ -140,98 +147,186 @@ def pretrain_graph_reconstructer(args, runner, learner, buffer, logger):
     pretrain_buffer_path = getattr(args, 'pretrain_buffer_path', '')
     save_pretrain_buffer = getattr(args, 'save_pretrain_buffer', False)
     
-    logger.console_logger.info("=" * 60)
-    logger.console_logger.info(f"=== Graph Reconstructer Pretrain: {stage} ===")
-    logger.console_logger.info(f"    Episodes to collect: {pretrain_episodes}")
-    logger.console_logger.info(f"    Training epochs: {pretrain_epochs}")
-    logger.console_logger.info(f"    Batch size: {pretrain_batch_size}")
-    logger.console_logger.info(f"    Eval interval: {eval_interval} epochs")
-    logger.console_logger.info(f"    Eval episodes: {eval_episodes}")
-    if pretrain_buffer_path:
-        logger.console_logger.info(f"    Buffer load path: {pretrain_buffer_path}")
-    if save_pretrain_buffer:
-        logger.console_logger.info(f"    Save buffer after collection: True")
-    logger.console_logger.info("=" * 60)
+    # Distributed training config
+    is_distributed = getattr(args, 'is_distributed', False)
+    local_rank = getattr(args, 'local_rank', 0)
+    world_size = getattr(args, 'world_size', 1)
     
-    # Phase 1: Load or collect training episodes
-    buffer_loaded = False
-    if pretrain_buffer_path and os.path.exists(pretrain_buffer_path):
-        logger.console_logger.info(f"[Pretrain] Loading episodes from {pretrain_buffer_path}...")
-        buffer_loaded = buffer.load(pretrain_buffer_path, strict=True)
-        if buffer_loaded:
-            logger.console_logger.info(f"[Pretrain] Successfully loaded {buffer.episodes_in_buffer} episodes from disk")
-        else:
-            logger.console_logger.warning(f"[Pretrain] Failed to load buffer, will collect new episodes")
-    
-    if not buffer_loaded:
-        logger.console_logger.info(f"[Pretrain] Collecting {pretrain_episodes} training episodes...")
-        with tqdm(total=pretrain_episodes, initial=buffer.episodes_in_buffer, desc="Collecting pretrain episodes") as pbar:
-            while buffer.episodes_in_buffer < pretrain_episodes:
-                with th.no_grad():
-                    episode_batch = runner.run(test_mode=False, skip_logging=True)
-                    if episode_batch.batch_size > 0:
-                        buffer.insert_episode_batch(episode_batch)
-                        pbar.update(episode_batch.batch_size)
-        logger.console_logger.info(f"[Pretrain] Training data collection complete: {buffer.episodes_in_buffer} episodes")
-        
+    # Only log on main process
+    if is_main_process():
+        logger.console_logger.info("=" * 60)
+        logger.console_logger.info(f"=== Graph Reconstructer Pretrain: {stage} ===")
+        logger.console_logger.info(f"    Episodes to collect: {pretrain_episodes}")
+        logger.console_logger.info(f"    Training epochs: {pretrain_epochs}")
+        logger.console_logger.info(f"    Batch size per GPU: {pretrain_batch_size}")
+        if is_distributed:
+            logger.console_logger.info(f"    World size (GPUs): {world_size}")
+            logger.console_logger.info(f"    Effective batch size: {pretrain_batch_size * world_size}")
+        logger.console_logger.info(f"    Eval interval: {eval_interval} epochs")
+        logger.console_logger.info(f"    Eval episodes: {eval_episodes}")
+        if pretrain_buffer_path:
+            logger.console_logger.info(f"    Buffer load path: {pretrain_buffer_path}")
         if save_pretrain_buffer:
-            save_dir = os.path.join(args.local_results_path, "buffers", args.log_model_dir)
-            os.makedirs(save_dir, exist_ok=True)
-            map_name = args.env_args.get('map_name', 'unknown')
-            save_path = os.path.join(save_dir, f"pretrain_buffer_{map_name}_{pretrain_episodes}.pt")
-            buffer.save(save_path)
-            logger.console_logger.info(f"[Pretrain] Buffer saved to {save_path}")
+            logger.console_logger.info(f"    Save buffer after collection: True")
+        logger.console_logger.info("=" * 60)
+    
+    # Phase 1: Load or collect training episodes (only on main process)
+    buffer_loaded = False
+    
+    if is_main_process():
+        # Try to load buffer
+        if pretrain_buffer_path and os.path.exists(pretrain_buffer_path):
+            logger.console_logger.info(f"[Pretrain] Loading episodes from {pretrain_buffer_path}...")
+            buffer_loaded = buffer.load(pretrain_buffer_path, strict=True)
+            if buffer_loaded:
+                logger.console_logger.info(f"[Pretrain] Successfully loaded {buffer.episodes_in_buffer} episodes from disk")
+            else:
+                logger.console_logger.warning(f"[Pretrain] Failed to load buffer, will collect new episodes")
+        
+        # Collect new episodes if not loaded
+        if not buffer_loaded:
+            logger.console_logger.info(f"[Pretrain] Collecting {pretrain_episodes} training episodes...")
+            with tqdm(total=pretrain_episodes, initial=buffer.episodes_in_buffer, desc="Collecting pretrain episodes") as pbar:
+                while buffer.episodes_in_buffer < pretrain_episodes:
+                    with th.no_grad():
+                        episode_batch = runner.run(test_mode=False, skip_logging=True)
+                        if episode_batch.batch_size > 0:
+                            buffer.insert_episode_batch(episode_batch)
+                            pbar.update(episode_batch.batch_size)
+            logger.console_logger.info(f"[Pretrain] Training data collection complete: {buffer.episodes_in_buffer} episodes")
+            
+            if save_pretrain_buffer:
+                save_dir = os.path.join(args.local_results_path, "buffers", args.log_model_dir)
+                os.makedirs(save_dir, exist_ok=True)
+                map_name = args.env_args.get('map_name', 'unknown')
+                save_path = os.path.join(save_dir, f"pretrain_buffer_{map_name}_{pretrain_episodes}.pt")
+                buffer.save(save_path)
+                logger.console_logger.info(f"[Pretrain] Buffer saved to {save_path}")
+    
+    # Broadcast buffer from main process to all other processes
+    if is_distributed:
+        if is_main_process():
+            logger.console_logger.info(f"[Pretrain] Broadcasting buffer to all {world_size} GPUs...")
+        barrier()  # Wait for main process to finish collecting
+        buffer.broadcast_buffer(src=0)
+        barrier()  # Wait for broadcast to complete
+        if is_main_process():
+            logger.console_logger.info(f"[Pretrain] Buffer broadcast complete")
+    
+    # Phase 2: Wrap model with DDP for multi-GPU training
+    original_graph_reconstructer = learner.graph_reconstructer
+    
+    if is_distributed and args.use_cuda:
+        # Move model to local GPU
+        device = f'cuda:{local_rank}'
+        learner.graph_reconstructer = learner.graph_reconstructer.to(device)
+        args.device = device
+        
+        # Wrap with DDP
+        learner.graph_reconstructer = wrap_model_ddp(
+            learner.graph_reconstructer, 
+            local_rank,
+            find_unused_parameters=True  # Some params may be unused depending on stage
+        )
+        
+        # Recreate optimizer with DDP-wrapped model parameters
+        graph_lr = getattr(args, 'graph_lr', 0.001)
+        wrapped_model = unwrap_model(learner.graph_reconstructer)
+        if stage == 'stage1':
+            params = wrapped_model.tokenizer.parameters()
+        else:
+            params = wrapped_model.stage2_model.parameters()
+        learner.graph_optimizer = th.optim.Adam(params, lr=graph_lr)
+        
+        if is_main_process():
+            logger.console_logger.info(f"[Pretrain] Model wrapped with DDP on {world_size} GPUs")
     
     best_eval_loss = float('inf')
     best_model_path = None
     
-    # Phase 2: Train graph reconstructer with periodic evaluation
-    logger.console_logger.info(f"[Pretrain] Training {stage} for {pretrain_epochs} epochs...")
+    # Phase 3: Train graph reconstructer with periodic evaluation
+    if is_main_process():
+        logger.console_logger.info(f"[Pretrain] Training {stage} for {pretrain_epochs} epochs...")
+    
     for epoch in range(pretrain_epochs):
         if not buffer.can_sample(pretrain_batch_size):
-            logger.console_logger.warning("[Pretrain] Not enough data to sample, skipping epoch")
+            if is_main_process():
+                logger.console_logger.warning("[Pretrain] Not enough data to sample, skipping epoch")
             continue
-            
+        
+        # Each GPU samples its own batch (different random samples)
         episode_sample = buffer.sample(pretrain_batch_size)
         max_ep_t = episode_sample.max_t_filled()
         episode_sample = episode_sample[:, :max_ep_t]
         if episode_sample.device != args.device:
             episode_sample.to(args.device)
         
+        # Train one step
         loss_info = learner.train_graph_reconstructor(episode_sample, runner.t_env, epoch)
         
-        if epoch % log_interval == 0:
+        # Log only on main process
+        if is_main_process() and epoch % log_interval == 0:
             _log_token_stats(logger, loss_info, epoch, prefix="[Train]")
         
+        # Evaluation (only on main process)
         if (epoch + 1) % eval_interval == 0 or epoch == pretrain_epochs - 1:
-            eval_loss, _ = _run_graph_evaluation(
-                args, runner, learner, logger, eval_episodes, epoch=epoch,
-                detailed_episodes=getattr(args, 'eval_detailed_episodes', 3)
-            )
-            
-            if eval_loss < best_eval_loss and args.save_model:
-                best_eval_loss = eval_loss
-                best_model_path = os.path.join(
-                    args.local_results_path, "models", args.log_model_dir,
-                    args.unique_token, f"pretrain_{stage}_best"
+            if is_main_process():
+                # Temporarily unwrap model for evaluation
+                eval_model = unwrap_model(learner.graph_reconstructer)
+                learner.graph_reconstructer = eval_model
+                
+                eval_loss, _ = _run_graph_evaluation(
+                    args, runner, learner, logger, eval_episodes, epoch=epoch,
+                    detailed_episodes=getattr(args, 'eval_detailed_episodes', 3)
                 )
-                os.makedirs(best_model_path, exist_ok=True)
-                learner.save_graph_reconstructor(best_model_path)
-                logger.console_logger.info(f"[Pretrain] New best model saved (loss: {eval_loss:.4f})")
+                
+                if eval_loss < best_eval_loss and args.save_model:
+                    best_eval_loss = eval_loss
+                    best_model_path = os.path.join(
+                        args.local_results_path, "models", args.log_model_dir,
+                        args.unique_token, f"pretrain_{stage}_best"
+                    )
+                    os.makedirs(best_model_path, exist_ok=True)
+                    learner.save_graph_reconstructor(best_model_path)
+                    logger.console_logger.info(f"[Pretrain] New best model saved (loss: {eval_loss:.4f})")
+                
+                # Re-wrap for training if distributed
+                if is_distributed:
+                    learner.graph_reconstructer = wrap_model_ddp(
+                        eval_model.to(args.device), local_rank, find_unused_parameters=True
+                    )
+            
+            # Sync all processes after evaluation
+            if is_distributed:
+                barrier()
     
-    logger.console_logger.info(f"[Pretrain] {stage} training completed!")
+    # Phase 4: Save final model and cleanup
+    if is_main_process():
+        logger.console_logger.info(f"[Pretrain] {stage} training completed!")
+        
+        # Unwrap model for saving
+        model_to_save = unwrap_model(learner.graph_reconstructer)
+        learner.graph_reconstructer = model_to_save
+        
+        if args.save_model:
+            save_path = os.path.join(
+                args.local_results_path, "models", args.log_model_dir,
+                args.unique_token, f"pretrain_{stage}"
+            )
+            os.makedirs(save_path, exist_ok=True)
+            learner.save_graph_reconstructor(save_path)
+            logger.console_logger.info(f"[Pretrain] Saved final {stage} model to {save_path}")
+            if best_model_path:
+                logger.console_logger.info(f"[Pretrain] Best model saved at {best_model_path} (loss: {best_eval_loss:.4f})")
+        logger.console_logger.info("=" * 60)
     
-    if args.save_model:
-        save_path = os.path.join(
-            args.local_results_path, "models", args.log_model_dir,
-            args.unique_token, f"pretrain_{stage}"
-        )
-        os.makedirs(save_path, exist_ok=True)
-        learner.save_graph_reconstructor(save_path)
-        logger.console_logger.info(f"[Pretrain] Saved final {stage} model to {save_path}")
-        if best_model_path:
-            logger.console_logger.info(f"[Pretrain] Best model saved at {best_model_path} (loss: {best_eval_loss:.4f})")
-    logger.console_logger.info("=" * 60)
+    # Restore original model reference (unwrapped) for non-main processes too
+    if is_distributed and not is_main_process():
+        learner.graph_reconstructer = unwrap_model(learner.graph_reconstructer)
+    
+    # Final sync
+    if is_distributed:
+        barrier()
 
 
 # ==============================================================================

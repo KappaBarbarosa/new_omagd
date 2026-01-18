@@ -13,6 +13,13 @@ from learners.nq_learner import NQLearner ,calculate_n_step_td_target, calculate
 from modules.graph_reconstructers.graph_reconstructer import GraphReconstructer
 
 
+def unwrap_model(model):
+    """Unwrap DDP model to get the underlying module."""
+    if hasattr(model, 'module'):
+        return model.module
+    return model
+
+
 class NQGraphLearner(NQLearner): 
     def __init__(self, mac, scheme, logger, args):
         super().__init__(mac, scheme, logger, args)
@@ -31,6 +38,15 @@ class NQGraphLearner(NQLearner):
             ) 
         self.graph_log_stats_t = 0
         self.graph_train_steps = 0
+    
+    def _get_graph_model(self):
+        """Get the underlying graph reconstructer model (handles DDP wrapping)."""
+        return unwrap_model(self.graph_reconstructer)
+    
+    def _get_stage_parameters(self):
+        """Get trainable parameters for current stage (handles DDP wrapping)."""
+        model = self._get_graph_model()
+        return model.get_stage_parameters()
     
     
     # NOTE: Missing node and masking statistics are computed in graph_reconstructer/mask_predictor
@@ -167,10 +183,13 @@ class NQGraphLearner(NQLearner):
         return stacked_input, stacked_gt, mask_flat, k
     
     def train_graph_reconstructor(self, batch: EpisodeBatch, t_env: int, epoch: int = 0):
-        """Train graph reconstructer (Stage 1: tokenizer or Stage 2: mask predictor)."""
+        """Train graph reconstructer (Stage 1: tokenizer or Stage 2: mask predictor).
         
-        # Move graph reconstructer to GPU if needed
-        if self.args.use_cuda:
+        Supports DDP-wrapped models for multi-GPU training.
+        """
+        
+        # Move graph reconstructer to GPU if needed (skip if already on device or DDP-wrapped)
+        if self.args.use_cuda and not hasattr(self.graph_reconstructer, 'module'):
             self.graph_reconstructer = self.graph_reconstructer.to(self.args.device)
         
         # Get stacking config
@@ -197,7 +216,8 @@ class NQGraphLearner(NQLearner):
         
         # Timestep indices
         timestep_indices = self._get_timestep_indices(B, T, N, self.args.device)
-        # Compute loss
+        
+        # Compute loss (works with both raw and DDP-wrapped model)
         loss_data, loss_info = self.graph_reconstructer.compute_loss(
             stacked_input, stacked_gt,
             training=True,
@@ -222,8 +242,10 @@ class NQGraphLearner(NQLearner):
         # Backprop
         self.graph_optimizer.zero_grad()
         loss.backward()
+        
+        # Use helper method to get parameters (handles DDP wrapping)
         grad_norm = th.nn.utils.clip_grad_norm_(
-            self.graph_reconstructer.get_stage_parameters(),
+            self._get_stage_parameters(),
             self.args.grad_norm_clip
         )
         self.graph_optimizer.step()
@@ -231,9 +253,10 @@ class NQGraphLearner(NQLearner):
         self.graph_train_steps += 1
 
         
-        # Logging tokenizer metrics to W&B
+        # Logging tokenizer metrics to W&B (only on main process in distributed mode)
+        from utils.distributed import is_main_process
         log_interval = getattr(self.args, 'graph_pretrain_log_interval', 1)
-        if epoch % log_interval == 0:
+        if epoch % log_interval == 0 and is_main_process():
             # Main loss - use epoch as step for better W&B visualization
             self.logger.log_stat("train/graph_loss", loss.item(), epoch)
             self.logger.log_stat("train/graph_grad_norm", grad_norm.item() if hasattr(grad_norm, 'item') else grad_norm, epoch)
@@ -352,9 +375,14 @@ class NQGraphLearner(NQLearner):
         return {'loss_info': loss_info}
     
     def eval_graph_reconstructor(self, batch: EpisodeBatch, print_detailed: bool = False, episode_num: int = 1):
-        """Evaluate graph reconstructer on a batch (no gradient computation)."""
+        """Evaluate graph reconstructer on a batch (no gradient computation).
         
-        if self.args.use_cuda:
+        Handles DDP-wrapped models for multi-GPU training.
+        """
+        # Get underlying model (handles DDP wrapping)
+        model = self._get_graph_model()
+        
+        if self.args.use_cuda and not hasattr(self.graph_reconstructer, 'module'):
             self.graph_reconstructer = self.graph_reconstructer.to(self.args.device)
         
         # Get stacking config
@@ -374,10 +402,10 @@ class NQGraphLearner(NQLearner):
                 with th.no_grad():
                     print_detailed_episode_stacked(
                         batch=single_batch,
-                        graph_reconstructer=self.graph_reconstructer,
+                        graph_reconstructer=model,  # Use unwrapped model
                         stacked_steps=stacked_steps,
                         stacked_strip=stacked_strip,
-                        n_nodes_per_frame=self.graph_reconstructer.n_nodes_per_frame,
+                        n_nodes_per_frame=model.n_nodes_per_frame,
                         episode_num=episode_num, agent_idx=0,
                         logger=self.logger.console_logger,
                     )
@@ -391,9 +419,9 @@ class NQGraphLearner(NQLearner):
                 with th.no_grad():
                     print_detailed_episode_full(
                         batch=single_batch,
-                        graph_reconstructer=self.graph_reconstructer,
+                        graph_reconstructer=model,  # Use unwrapped model
                         stacked_steps=stacked_steps,
-                        n_nodes_per_frame=self.graph_reconstructer.n_nodes_per_frame,
+                        n_nodes_per_frame=model.n_nodes_per_frame,
                         episode_num=episode_num, agent_idx=0,
                         logger=self.logger.console_logger,
                     )
@@ -422,7 +450,7 @@ class NQGraphLearner(NQLearner):
                 timestep_indices=timestep_indices,
                 stacked_steps=stacked_steps if k else 1,
             )
-        self.graph_reconstructer.set_training_stage(self.graph_reconstructer.training_stage)
+        model.set_training_stage(model.training_stage)  # Use unwrapped model
         
         # Reduction
         valid_mask = ~useless_mask
@@ -438,8 +466,9 @@ class NQGraphLearner(NQLearner):
     def load_pretrained_tokenizer(self, path):
         """Load pretrained tokenizer weights for Stage 2 training."""
         tokenizer_path = f"{path}/tokenizer.th"
+        model = self._get_graph_model()  # Handle DDP wrapping
         try:
-            self.graph_reconstructer.tokenizer.load_state_dict(
+            model.tokenizer.load_state_dict(
                 th.load(tokenizer_path, map_location=lambda storage, loc: storage)
             )
             self.logger.console_logger.info(f"Loaded pretrained tokenizer from {tokenizer_path}")
@@ -447,15 +476,16 @@ class NQGraphLearner(NQLearner):
             self.logger.console_logger.warning(f"Pretrained tokenizer not found at {tokenizer_path}")
     
     def save_graph_reconstructor(self, path):
-        """Save graph reconstructer weights."""
+        """Save graph reconstructer weights (handles DDP wrapping)."""
         stage = getattr(self.args, 'recontructer_stage', 'stage1')
+        model = self._get_graph_model()  # Handle DDP wrapping
         
         if stage == 'stage1':
             # Save tokenizer
-            th.save(self.graph_reconstructer.tokenizer.state_dict(), f"{path}/tokenizer.th")
+            th.save(model.tokenizer.state_dict(), f"{path}/tokenizer.th")
         elif stage == 'stage2':
             # Save stage2 model (mask predictor or diffusion)
-            th.save(self.graph_reconstructer.stage2_model.state_dict(), f"{path}/stage2_model.th")
+            th.save(model.stage2_model.state_dict(), f"{path}/stage2_model.th")
         
         # Save optimizer state
         th.save(self.graph_optimizer.state_dict(), f"{path}/graph_opt.th")
@@ -463,19 +493,21 @@ class NQGraphLearner(NQLearner):
         self.logger.console_logger.info(f"Saved graph reconstructer ({stage}) to {path}")
     
     def load_graph_reconstructor(self, path, stage=None):
-        """Load graph reconstructer weights."""
+        """Load graph reconstructer weights (handles DDP wrapping)."""
         if stage is None:
             stage = getattr(self.args, 'recontructer_stage', 'stage1')
         
+        model = self._get_graph_model()  # Handle DDP wrapping
+        
         if stage == 'stage1':
             tokenizer_path = f"{path}/tokenizer.th"
-            self.graph_reconstructer.tokenizer.load_state_dict(
+            model.tokenizer.load_state_dict(
                 th.load(tokenizer_path, map_location=lambda storage, loc: storage)
             )
             # mac/target_mac share the same graph_reconstructer reference
         elif stage == 'stage2':
             model_path = f"{path}/stage2_model.th"
-            self.graph_reconstructer.stage2_model.load_state_dict(
+            model.stage2_model.load_state_dict(
                 th.load(model_path, map_location=lambda storage, loc: storage)
             )
             # mac/target_mac share the same graph_reconstructer reference

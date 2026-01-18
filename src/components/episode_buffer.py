@@ -337,6 +337,50 @@ class ReplayBuffer(EpisodeBatch):
         print(f"[ReplayBuffer] Loaded {self.episodes_in_buffer} episodes from {load_path}")
         return True
 
+    def broadcast_buffer(self, src=0):
+        """
+        Broadcast buffer data from src rank to all other ranks.
+        Used for distributed training where data is collected only on main process.
+        
+        Args:
+            src: Source rank to broadcast from (default: 0, main process)
+        """
+        import torch.distributed as dist
+        
+        if not dist.is_initialized():
+            return
+        
+        rank = dist.get_rank()
+        
+        # Broadcast buffer metadata first
+        metadata = th.tensor([self.buffer_index, self.episodes_in_buffer], dtype=th.long)
+        if rank != src:
+            metadata = th.zeros(2, dtype=th.long)
+        dist.broadcast(metadata, src=src)
+        
+        if rank != src:
+            self.buffer_index = metadata[0].item()
+            self.episodes_in_buffer = metadata[1].item()
+        
+        # Broadcast transition data
+        for k, v in self.data.transition_data.items():
+            if rank == src:
+                # Source has the data, broadcast it
+                dist.broadcast(v, src=src)
+            else:
+                # Other ranks receive the data
+                dist.broadcast(self.data.transition_data[k], src=src)
+        
+        # Broadcast episode data
+        for k, v in self.data.episode_data.items():
+            if rank == src:
+                dist.broadcast(v, src=src)
+            else:
+                dist.broadcast(self.data.episode_data[k], src=src)
+        
+        if rank != src:
+            print(f"[ReplayBuffer] Rank {rank}: Received {self.episodes_in_buffer} episodes from rank {src}")
+
     def __repr__(self):
         return "ReplayBuffer. {}/{} episodes. Keys:{} Groups:{}".format(self.episodes_in_buffer,
                                                                         self.buffer_size,

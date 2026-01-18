@@ -11,6 +11,7 @@ from sacred.utils import apply_backspaces_and_linefeeds
 import sys
 import torch as th
 from utils.logging import get_logger
+from utils.distributed import setup_distributed, cleanup_distributed, is_main_process
 import yaml
 
 from run import REGISTRY as run_REGISTRY
@@ -29,18 +30,35 @@ results_path = join(dirname(dirname(abspath(__file__))))
 def my_main(_run, _config, _log):
     # Setting the random seed throughout the modules
     config = config_copy(_config)
-    random.seed(config["seed"])
-    np.random.seed(config["seed"])
-    th.manual_seed(config["seed"])
-    th.cuda.manual_seed(config["seed"])
-    # th.cuda.manual_seed_all(config["seed"])
+    
+    # Initialize distributed training
+    is_distributed, rank, world_size, local_rank = setup_distributed()
+    config['is_distributed'] = is_distributed
+    config['rank'] = rank
+    config['world_size'] = world_size
+    config['local_rank'] = local_rank
+    
+    # Set seed (different seed per rank for data diversity in non-pretrain phases)
+    # For pretrain, we collect data only on rank 0, so this doesn't affect data collection
+    seed = config["seed"] + rank if is_distributed else config["seed"]
+    random.seed(seed)
+    np.random.seed(seed)
+    th.manual_seed(seed)
+    th.cuda.manual_seed(seed)
     th.backends.cudnn.deterministic = True  # cudnn
 
+    config['env_args']['seed'] = seed
+    
+    # Only log on main process for distributed training
+    if is_distributed and not is_main_process():
+        # Disable Sacred observers on non-main processes
+        _run.observers = []
 
-    config['env_args']['seed'] = config["seed"]
-
-    # run
-    run_REGISTRY[_config['run']](_run, config, _log)
+    try:
+        # run
+        run_REGISTRY[_config['run']](_run, config, _log)
+    finally:
+        cleanup_distributed()
 
 
 def _get_config(params, arg_name, subfolder):
