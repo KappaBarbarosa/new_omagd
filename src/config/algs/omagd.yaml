@@ -18,7 +18,7 @@ target_update_interval: 200
 
 # use the Q_Learner to train
 run: "v2"
-mac: "n_mac"
+mac: "n_graph_mac"
 agent: "n_rnn"
 agent_output_type: q
 
@@ -45,7 +45,7 @@ per_beta: 0.4
 return_priority: False
 
 #name: "qmix_env= 8_adam_td_lambda"
-name: "omagd_origin"
+name: "omagd_hungarian"
 use_wandb: False
 
 # =============================================================================
@@ -115,9 +115,9 @@ pretrained_mask_predictor_path: ""
 # =============================================================================
 # Pretrain Configuration
 # =============================================================================
-graph_pretrain_episodes: 10000     # Episodes to collect before pretrain
+graph_pretrain_episodes: 5000     # Episodes to collect before pretrain
 graph_pretrain_epochs: 100       # Training epochs for pretrain
-graph_pretrain_batch_size: 16     # Batch size for pretrain (defaults to batch_size if not set)
+graph_pretrain_batch_size: 8     # Batch size for pretrain (defaults to batch_size if not set)
 graph_lr: 0.0005                   # Learning rate for graph reconstructer
 graph_pretrain_log_interval: 1   # Log interval during pretrain (epochs)
 graph_pretrain_eval_interval: 20  # Evaluation interval (epochs)
@@ -128,7 +128,7 @@ graph_pretrain_eval_episodes: 40  # Number of NEW episodes to collect for evalua
 # =============================================================================
 evaluation_only: False            # Run evaluation-only mode (no training)
 eval_report_episodes: 10           # Number of episodes for detailed step-by-step logging
-save_pretrain_buffer: False
+save_pretrain_buffer: True
 pretrain_only: False
 # Raw episode buffer path (for Stage 1 or if balanced buffer not available)
-# pretrain_buffer_path: "/home/marl2025/new_omagd/results/buffers/sc2_3m-obs_aid=1-obs_act=1/algo=omagd_origin-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/pretrain_buffer_3m_5000.pt"
+pretrain_buffer_path: "/home/marl2025/new_omagd/results/buffers/sc2_5m_vs_6m-obs_aid=1-obs_act=1/algo=omagd_origin-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/pretrain_buffer_5m_vs_6m_5000.pt"

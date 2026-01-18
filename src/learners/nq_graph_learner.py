@@ -18,6 +18,8 @@ class NQGraphLearner(NQLearner):
         super().__init__(mac, scheme, logger, args)
 
         self.graph_reconstructer = GraphReconstructer(args)
+        # Note: mac and target_mac share the same graph_reconstructer reference
+        # set via run_v2.py (Stage 3). No deepcopy needed since it's frozen.
         
         # Optimizer for graph reconstructer
         graph_lr = getattr(args, 'graph_lr', 0.001)
@@ -470,16 +472,19 @@ class NQGraphLearner(NQLearner):
             self.graph_reconstructer.tokenizer.load_state_dict(
                 th.load(tokenizer_path, map_location=lambda storage, loc: storage)
             )
+            # mac/target_mac share the same graph_reconstructer reference
         elif stage == 'stage2':
             model_path = f"{path}/stage2_model.th"
             self.graph_reconstructer.stage2_model.load_state_dict(
                 th.load(model_path, map_location=lambda storage, loc: storage)
             )
+            # mac/target_mac share the same graph_reconstructer reference
 
     def train(self, batch: EpisodeBatch, t_env: int, episode_num: int):
         start_time = time.time()
         if self.args.use_cuda and str(self.mac.get_device()) == "cpu":
             self.mac.cuda()
+            self.graph_reconstructer.cuda()
 
         # Data shape: (batch_size, max_seq_length - 1, D)
 
@@ -595,8 +600,7 @@ class NQGraphLearner(NQLearner):
         if self.mixer is not None:
             self.mixer.cuda()
             self.target_mixer.cuda()
-        if hasattr(self, 'graph_reconstructer'):
-            self.graph_reconstructer.cuda()
+        self.graph_reconstructer.cuda()
 
     def save_models(self, path):
         self.mac.save_models(path)

@@ -20,7 +20,7 @@ def evaluation(
     useless_mask: Optional[torch.Tensor],
     vocab_size: Optional[int] = None,
     validation: bool = False,
-    use_hungarian: bool = False,
+    use_hungarian: bool = True,
     num_samples: int = 5,
 ) -> Dict[str, float]:
     """

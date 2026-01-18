@@ -92,8 +92,8 @@ def run(_run, _config, _log):
 
     if getattr(args, 'use_wandb', False):
         wandb_config = _config.copy()
+        map_name = args.env_args.get('map_name', 'unknown')
         if getattr(args, 'use_graph_reconstruction', False):
-            map_name = args.env_args.get('map_name', 'unknown')
             stage = getattr(args, 'recontructer_stage', 'stage1')
             project_name = f"{map_name}_reconstruction_{stage}"
         else:
@@ -578,9 +578,11 @@ def run_sequential(args, logger):
     logger.console_logger.info("=" * 60)
     
     # Setup graph reconstruction for MAC (if using NGraphMAC)
+    # Both mac and target_mac share the same graph_reconstructer reference
     if hasattr(mac, 'set_graph_reconstructer'):
         mac.set_graph_reconstructer(learner.graph_reconstructer)
-        logger.console_logger.info("[Stage 3] Graph reconstructer enabled for MAC")
+        learner.target_mac.set_graph_reconstructer(learner.graph_reconstructer)
+        logger.console_logger.info("[Stage 3] Graph reconstructer enabled for MAC and target_MAC (shared)")
     
     # Freeze graph reconstructer during Stage 3 (default)
     freeze_graph = getattr(args, 'recontructer_stage', 'stage0') == 'stage3'

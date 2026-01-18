@@ -24,7 +24,8 @@ class GraphConvLayer(nn.Module):
         node_feats = self.lin_layer_self(input_feature)  # node features
         node_feats = F.relu(node_feats, inplace=True)
         out = (node_feats + neighbors) / self.n_nodes  # mean
-        return out
+        # Return both output and adj for chaining in Sequential
+        return [out, adjacent_matrix]
 
     def __repr__(self):
         return self.__class__.__name__ + ' (' \
@@ -58,8 +59,8 @@ class GNN(nn.Module):
         self.gnn_layers = nn.Sequential(*GNN_layers)
 
     def forward(self, x):
-        # GNNs
-        out = self.gnn_layers([x, self.adj])
+        # GNNs - output is [features, adj_matrix], extract features only
+        out, _ = self.gnn_layers([x, self.adj])
 
         # Pooling
         if self.out_pool_type == 'avg':

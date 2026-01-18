@@ -104,7 +104,7 @@ class MaskedTokenPredictor(nn.Module):
         dropout: float = 0.1,
         mask_ratio: float = 0.15,
         max_nodes: int = 32,
-        zero_vector_token_id: int = 265,
+        zero_vector_token_id: int = 742,
         label_smoothing: float = 0.1,
     ):
         super().__init__()
@@ -165,7 +165,7 @@ class MaskedTokenPredictor(nn.Module):
         gt_tokens: torch.Tensor,
         useless_mask: torch.Tensor = None,
         prioritize_missing_mask: torch.Tensor = None,
-        use_hungarian: bool = False,
+        use_hungarian: bool = True,
         stacked_steps: int = 1,
         n_nodes_per_frame: int = None,
         validation: bool = False,
@@ -201,9 +201,23 @@ class MaskedTokenPredictor(nn.Module):
             loss_mask = loss_mask & (gt_tokens != self.zero_vector_token_id)
 
         # Compute per-sample loss
-        loss_per_sample, count_per_sample, accuracy = self._compute_ce_loss_per_sample(
-            logits, gt_tokens, loss_mask
-        )
+        if use_hungarian:
+            # Use Hungarian loss for training (allows permutation-invariant matching)
+            hungarian_loss_per_sample, hungarian_count_per_sample, hungarian_logs = self.hungarian_loss.forward_per_sample(
+                logits, gt_tokens, graph_data["node_types"], loss_mask
+            )
+            # Also compute CE for logging accuracy
+            _, count_per_sample, accuracy = self._compute_ce_loss_per_sample(
+                logits, gt_tokens, loss_mask
+            )
+            loss_per_sample = hungarian_loss_per_sample
+            count_per_sample = hungarian_count_per_sample
+        else:
+            # Standard CE loss
+            loss_per_sample, count_per_sample, accuracy = self._compute_ce_loss_per_sample(
+                logits, gt_tokens, loss_mask
+            )
+            hungarian_logs = {}
 
         # Evaluation logging
         eval_logs = evaluation(
@@ -255,6 +269,7 @@ class MaskedTokenPredictor(nn.Module):
             "predictor_accuracy": accuracy,
             "_loss_count": count_per_sample,  # For external weighted averaging
         }
+        logs.update(hungarian_logs)
         logs.update(eval_logs)
         logs.update(masked_token_stats)
 

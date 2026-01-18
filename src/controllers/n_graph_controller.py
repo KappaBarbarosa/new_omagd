@@ -49,10 +49,9 @@ class NGraphMAC(NMAC):
         
         # Get observation
         obs = batch["obs"][:, t]  # [B, n_agents, obs_dim]
+
         
-        # Reconstruct observation if enabled
-        if self.use_reconstruction and self._reconstruction_enabled and self.graph_reconstructer is not None:
-            obs = self._reconstruct_batch_obs(obs)
+        obs = self._reconstruct_batch_obs(obs)
         
         inputs.append(obs)
         
@@ -84,7 +83,7 @@ class NGraphMAC(NMAC):
         device = obs.device
         
         # Flatten to process all agents together
-        obs_flat = obs.view(B * N_agents, obs_dim)  # [B*n_agents, obs_dim]
+        obs_flat = obs.reshape(B * N_agents, obs_dim)  # [B*n_agents, obs_dim]
         
         # Reconstruct
         with th.no_grad():
@@ -94,6 +93,9 @@ class NGraphMAC(NMAC):
             )  # [B*n_agents, obs_dim]
         
         # Reshape back
-        reconstructed_obs = reconstructed_flat.view(B, N_agents, obs_dim)
+        reconstructed_obs = reconstructed_flat.reshape(B, N_agents, obs_dim)
         
         return reconstructed_obs
+    
+    # Note: graph_reconstructer device is managed by learner, not MAC
+    # No need to override cuda() here

@@ -11,12 +11,15 @@ MASK_PREDICTOR_PATH="results/models/sc2_3m-obs_aid=1-obs_act=1/algo=omagd_origin
 
 cd /home/marl2025/new_omagd
 
+
+
 python src/main.py \
     --config=omagd \
     --env-config=sc2 \
     with \
     env_args.map_name=3m \
     use_cuda=True \
+    cpu_inference=False \
     pretrain_only=False \
     recontructer_stage=stage3 \
     pretrained_tokenizer_path="${TOKENIZER_PATH}" \
@@ -26,4 +29,5 @@ python src/main.py \
     save_model=True \
     save_model_interval=100000 \
     log_interval=10000 \
-    local_results_path="results/stage3"
+    local_results_path="results/stage3" \
+    use_wandb=True

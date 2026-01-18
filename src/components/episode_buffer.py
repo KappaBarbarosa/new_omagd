@@ -107,7 +107,11 @@ class EpisodeBatch:
                 raise KeyError("{} not found in transition or episode data".format(k))
 
             dtype = self.scheme[k].get("dtype", th.float32)
-            v = th.tensor(np.array(v), dtype=dtype, device=self.device)
+            ## if v is a tensor, move it to the device
+            if isinstance(v, th.Tensor):
+                v = v.to(self.device)
+            else:
+                v = th.tensor(np.array(v), dtype=dtype, device=self.device)
             self._check_safe_view(k, v, target[k][_slices])
             target[k][_slices] = v.view_as(target[k][_slices])
 
