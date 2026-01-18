@@ -6,6 +6,9 @@ from typing import Dict, Optional, Tuple
 from utils.hungarian_matching import TypeWiseHungarianLoss
 from modules.graph_reconstructers.mask_predictor_logger import evaluation
 
+from modules.graph_reconstructers.temporal_mamba import TemporalMamba
+
+
 
 class GraphTransformer(nn.Module):
     """
@@ -59,7 +62,13 @@ class GraphTransformer(nn.Module):
         pe[:, 1::2] = torch.cos(position * div_term)
         self.timestep_embedding.weight.data.copy_(pe)
 
-    def forward(self, graph_data: dict, timestep: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self, 
+        graph_data: dict, 
+        timestep: torch.Tensor = None,
+        embedding_hook: callable = None,
+        n_nodes_per_frame: int = None,
+    ) -> torch.Tensor:
         x = graph_data["x"]
         node_types = graph_data["node_types"]
 
@@ -84,6 +93,10 @@ class GraphTransformer(nn.Module):
             
             combined = combined + ts_embed
         
+        # Apply embedding hook if provided (e.g., TemporalMamba)
+        if embedding_hook is not None:
+            combined = embedding_hook(combined, n_nodes_per_frame=n_nodes_per_frame)
+        
         return self.transformer(self.dropout(self.norm(combined)))
 
 
@@ -106,12 +119,20 @@ class MaskedTokenPredictor(nn.Module):
         max_nodes: int = 32,
         zero_vector_token_id: int = 742,
         label_smoothing: float = 0.1,
+        # Mamba temporal memory configuration
+        use_temporal_mamba: bool = False,
+        mamba_d_state: int = 16,
+        mamba_d_conv: int = 4,
+        mamba_expand: int = 2,
+        mamba_num_layers: int = 2,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.mask_ratio = mask_ratio
         self.zero_vector_token_id = zero_vector_token_id
         self.label_smoothing = label_smoothing
+        self.d_model = d_model
+        self.use_temporal_mamba = use_temporal_mamba
 
         self.encoder = GraphTransformer(
             d_model=d_model, nhead=nhead, num_encoder_layers=num_encoder_layers,
@@ -120,9 +141,35 @@ class MaskedTokenPredictor(nn.Module):
         )
         self.prediction_head = nn.Linear(d_model, vocab_size)
         self.hungarian_loss = TypeWiseHungarianLoss()
+        
+        # Optional Mamba temporal memory module
+        self.temporal_mamba = None
+        if use_temporal_mamba:
+            self.temporal_mamba = TemporalMamba(
+                d_model=d_model,
+                d_state=mamba_d_state,
+                d_conv=mamba_d_conv,
+                expand=mamba_expand,
+                num_layers=mamba_num_layers,
+                dropout=dropout,
+            )
+            print(f"🐍 TemporalMamba enabled: d_state={mamba_d_state}, layers={mamba_num_layers}")
 
-    def forward(self, graph_data: dict, timestep: torch.Tensor = None) -> torch.Tensor:
-        return self.prediction_head(self.encoder(graph_data, timestep=timestep))
+    def forward(
+        self, 
+        graph_data: dict, 
+        timestep: torch.Tensor = None,
+        n_nodes_per_frame: int = None,
+    ) -> torch.Tensor:
+        """Forward pass with optional temporal Mamba processing."""
+        hook = self.temporal_mamba if self.use_temporal_mamba else None
+        encoded = self.encoder(
+            graph_data, 
+            timestep=timestep, 
+            embedding_hook=hook,
+            n_nodes_per_frame=n_nodes_per_frame,
+        )
+        return self.prediction_head(encoded)
 
     def predict(
         self,
@@ -192,7 +239,8 @@ class MaskedTokenPredictor(nn.Module):
         masked_input[mask_positions] = self.vocab_size  # [MASK] token
         logits = self.forward(
             {"x": masked_input, "node_types": graph_data["node_types"]},
-            timestep=timestep_indices
+            timestep=timestep_indices,
+            n_nodes_per_frame=n_nodes_per_frame,
         )
 
         # Build loss mask (exclude zero-vector tokens)

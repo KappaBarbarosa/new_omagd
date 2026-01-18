@@ -45,7 +45,7 @@ per_beta: 0.4
 return_priority: False
 
 #name: "qmix_env= 8_adam_td_lambda"
-name: "omagd_hungarian"
+name: "omagd_hungarian_mamba"
 use_wandb: False
 
 # =============================================================================
@@ -109,7 +109,12 @@ mask_predictor_config:
   stacked_steps: 0
   stacked_strip: 1
   
-  # but can be overridden here if needed
+  # Temporal Mamba configuration (for temporal memory across stacked frames)
+  use_temporal_mamba: False # Enable Mamba temporal memory module
+  mamba_d_state: 16         # Mamba state dimension (higher = more memory capacity)
+  mamba_d_conv: 4           # Mamba convolution kernel size
+  mamba_expand: 2           # Mamba expansion factor
+  mamba_num_layers: 2       # Number of stacked Mamba blocks
 pretrained_mask_predictor_path: ""
 
 # =============================================================================
@@ -131,4 +136,4 @@ eval_report_episodes: 10           # Number of episodes for detailed step-by-ste
 save_pretrain_buffer: True
 pretrain_only: False
 # Raw episode buffer path (for Stage 1 or if balanced buffer not available)
-pretrain_buffer_path: "/home/marl2025/new_omagd/results/buffers/sc2_5m_vs_6m-obs_aid=1-obs_act=1/algo=omagd_origin-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/pretrain_buffer_5m_vs_6m_5000.pt"
+pretrain_buffer_path: "/home/marl2025/new_omagd/results/buffers/pretrain_buffer_5m_vs_6m_5000.pt"
