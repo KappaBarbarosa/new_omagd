@@ -277,7 +277,7 @@ def pretrain_graph_reconstructer(args, runner, learner, buffer, logger):
                 
                 eval_loss, _ = _run_graph_evaluation(
                     args, runner, learner, logger, eval_episodes, epoch=epoch,
-                    detailed_episodes=getattr(args, 'eval_detailed_episodes', 3)
+                    detailed_episodes=0  # Disable detailed episode logging during pretrain
                 )
                 
                 if eval_loss < best_eval_loss and args.save_model:
@@ -533,7 +533,8 @@ def _run_graph_evaluation(args, runner, learner, logger, eval_episodes, epoch=No
 
 def evaluate_graph_reconstructer(args, runner, learner, logger, eval_episodes, epoch):
     """Evaluate graph reconstructer during training."""
-    detailed_episodes = getattr(args, 'eval_detailed_episodes', 3)
+    # Disable detailed episode logging during training (set eval_detailed_episodes > 0 to enable)
+    detailed_episodes = getattr(args, 'eval_detailed_episodes', 0)
     return _run_graph_evaluation(args, runner, learner, logger, eval_episodes, epoch=epoch, detailed_episodes=detailed_episodes)
 
 

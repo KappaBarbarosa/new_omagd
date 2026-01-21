@@ -92,11 +92,10 @@ class GraphTransformer(nn.Module):
                 ts_embed = self.timestep_embedding(timestep).unsqueeze(1)  # [B, 1, d_model]
             
             combined = combined + ts_embed
-        print("combined.shape", combined.shape)
+            
         # Apply embedding hook if provided (e.g., TemporalMamba)
         if embedding_hook is not None:
             combined = embedding_hook(combined, n_nodes_per_frame=n_nodes_per_frame)
-        print("combined.shape after gru", combined.shape)
         return self.transformer(self.dropout(self.norm(combined)))
 
 

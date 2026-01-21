@@ -135,5 +135,5 @@ evaluation_only: False            # Run evaluation-only mode (no training)
 eval_report_episodes: 10           # Number of episodes for detailed step-by-step logging
 save_pretrain_buffer: False
 pretrain_only: False
-# Raw episode buffer path (for Stage 1 or if balanced buffer not available)
-# pretrain_buffer_path: "/home/marl2024/new_omagd/results/buffers/pretrain_buffer_8m_vs_9m_5000.pt"
+# Raw episode buffer path (for Stage 2 to reuse Stage 1 buffer)
+pretrain_buffer_path: ""
