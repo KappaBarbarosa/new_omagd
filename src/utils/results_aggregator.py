@@ -189,10 +189,6 @@ class ResultsAggregator:
         """Get a summary of all results."""
         return self.results.to_dict()
     
-    def get_stage_result(self, stage_name: str) -> Optional[StageResults]:
-        """Get results for a specific stage."""
-        return self.results.stages.get(stage_name)
-    
     def generate_report(self) -> str:
         """
         Generate a markdown report of the experiment.
@@ -348,7 +344,7 @@ class ResultsAggregator:
                     key_metric = f"MSE: {stage.metrics['mse']:.4f}"
                 elif stage_name == "stage2" and "masked_accuracy" in stage.metrics:
                     key_metric = f"Accuracy: {stage.metrics['masked_accuracy']:.4f}"
-                elif stage_name in ["stage3", "baseline", "fullobs"] and "test_win_rate" in stage.metrics:
+                elif stage_name == "stage3" and "test_win_rate" in stage.metrics:
                     key_metric = f"Win Rate: {stage.metrics['test_win_rate']:.4f}"
                 
                 if key_metric:
@@ -357,89 +353,3 @@ class ResultsAggregator:
         print("=" * 60 + "\n")
 
 
-def compare_experiments(experiment_dirs: List[str]) -> Dict:
-    """
-    Compare results across multiple experiments.
-    
-    Args:
-        experiment_dirs: List of experiment directory paths
-        
-    Returns:
-        Comparison dictionary
-    """
-    comparison = {
-        "experiments": [],
-        "stage_comparison": {}
-    }
-    
-    for exp_dir in experiment_dirs:
-        results_path = os.path.join(exp_dir, "summary", ResultsAggregator.RESULTS_FILE)
-        if os.path.exists(results_path):
-            with open(results_path, 'r') as f:
-                data = json.load(f)
-                comparison["experiments"].append({
-                    "name": data.get("experiment_name", "unknown"),
-                    "map": data.get("map_name", "unknown"),
-                    "seed": data.get("seed", 0),
-                    "total_duration": data.get("total_duration_sec", 0)
-                })
-                
-                # Compare stages
-                for stage_name, stage_data in data.get("stages", {}).items():
-                    if stage_name not in comparison["stage_comparison"]:
-                        comparison["stage_comparison"][stage_name] = []
-                    comparison["stage_comparison"][stage_name].append({
-                        "experiment": data.get("experiment_name", "unknown"),
-                        "metrics": stage_data.get("metrics", {})
-                    })
-    
-    return comparison
-
-
-if __name__ == "__main__":
-    import tempfile
-    
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Test aggregator
-        aggregator = ResultsAggregator(
-            experiment_dir=tmpdir,
-            experiment_name="test_experiment",
-            map_name="8m_vs_9m",
-            seed=1
-        )
-        
-        # Add stage results
-        aggregator.add_stage_result(
-            "stage1",
-            status="completed",
-            duration_sec=1823.5,
-            model_path="/path/to/stage1/model",
-            metrics={"loss": 0.0234, "mse": 0.0198, "codebook_usage": 0.85},
-            gpu_stats={
-                "memory": {"peak_mb": 4096, "avg_mb": 3500, "peak_percent": 50.0},
-                "utilization": {"peak_percent": 95, "avg_percent": 75}
-            }
-        )
-        
-        aggregator.add_stage_result(
-            "stage2",
-            status="completed",
-            duration_sec=2456.2,
-            model_path="/path/to/stage2/model",
-            metrics={"loss": 0.156, "masked_accuracy": 0.78, "top3_accuracy": 0.91},
-            gpu_stats={
-                "memory": {"peak_mb": 5120, "avg_mb": 4200, "peak_percent": 62.5},
-                "utilization": {"peak_percent": 90, "avg_percent": 70}
-            }
-        )
-        
-        # Print summary
-        aggregator.print_summary()
-        
-        # Generate report
-        report_path = aggregator.generate_report()
-        print(f"\nReport generated at: {report_path}")
-        
-        # Print report content
-        with open(report_path, 'r') as f:
-            print("\n" + f.read())

@@ -265,10 +265,6 @@ class GPUMonitor:
         
         return result
     
-    def get_current_usage(self) -> Optional[GPUSnapshot]:
-        """Get current GPU usage without affecting stage tracking."""
-        return self._get_snapshot()
-    
     def shutdown(self):
         """Clean up resources."""
         if self.current_stage is not None:
@@ -328,21 +324,3 @@ def get_gpu_info() -> Dict:
             })
     
     return info
-
-
-if __name__ == "__main__":
-    # Test GPU monitor
-    print("GPU Info:", get_gpu_info())
-    
-    monitor = GPUMonitor(gpu_id=0, sample_interval=0.5)
-    
-    # Simulate stage 1
-    monitor.start_stage("stage1_test")
-    time.sleep(3)
-    stats = monitor.end_stage()
-    
-    if stats:
-        print("\nStage Stats:")
-        print(stats.to_dict())
-    
-    monitor.shutdown()

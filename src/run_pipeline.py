@@ -2,20 +2,12 @@
 """
 Unified Experiment Pipeline for OMAGD
 
-Runs complete training pipeline: Stage 1 → Stage 2 → Stage 3 (+ optional baselines)
+Runs complete training pipeline: Stage 1 → Stage 2 → Stage 3
 
 Usage:
-    # Run with config file
-    python src/run_pipeline.py --config experiments/8m_vs_9m.yaml
-    
-    # Run specific stages
-    python src/run_pipeline.py --config experiments/8m_vs_9m.yaml --stages stage1,stage2
-    
-    # Resume from existing experiment
-    python src/run_pipeline.py --resume results/experiments/my_exp_20260121/
-    
-    # Quick run with defaults
-    python src/run_pipeline.py --map 8m_vs_9m --seed 1
+    python src/run_pipeline.py --map 8m_vs_9m
+    python src/run_pipeline.py --map 8m_vs_9m --stages stage1,stage2
+    python src/run_pipeline.py --resume results/experiments/omagd_8m_vs_9m_20260121/
 """
 
 import os

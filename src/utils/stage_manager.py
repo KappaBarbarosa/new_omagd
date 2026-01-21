@@ -6,7 +6,6 @@ Manages dependencies between training stages and model path resolution.
 
 import os
 import json
-import glob
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
@@ -270,16 +269,6 @@ class StageManager:
         print(f"[StageManager] Failed stage: {stage_name}")
         print(f"  Error: {error_message}")
     
-    def skip_stage(self, stage_name: str, reason: str = ""):
-        """Mark a stage as skipped."""
-        self.stages[stage_name] = StageInfo(
-            stage_name=stage_name,
-            status=StageStatus.SKIPPED,
-            error_message=reason
-        )
-        self._save_state()
-        print(f"[StageManager] Skipped stage: {stage_name} ({reason})")
-    
     def get_model_path(self, stage_name: str) -> Optional[str]:
         """
         Get the model path from a completed stage.
@@ -318,107 +307,3 @@ class StageManager:
         
         return info.buffer_path if info.buffer_path else None
     
-    def get_stage_info(self, stage_name: str) -> Optional[StageInfo]:
-        """Get full information about a stage."""
-        return self.stages.get(stage_name)
-    
-    def get_all_stages(self) -> Dict[str, StageInfo]:
-        """Get all stage information."""
-        return self.stages.copy()
-    
-    def get_summary(self) -> Dict:
-        """Get a summary of all stages."""
-        summary = {
-            "experiment_dir": self.experiment_dir,
-            "stages": {}
-        }
-        
-        for name, info in self.stages.items():
-            summary["stages"][name] = {
-                "status": info.status.value,
-                "duration_sec": info.duration_sec,
-                "model_path": info.model_path
-            }
-            if info.metrics:
-                # Include key metrics
-                summary["stages"][name]["key_metrics"] = {
-                    k: v for k, v in info.metrics.items() 
-                    if isinstance(v, (int, float)) and not k.startswith("_")
-                }[:5] if isinstance(info.metrics, dict) else {}
-        
-        return summary
-    
-    def find_latest_model(self, stage_name: str, pattern: str = "pretrain_*_best") -> Optional[str]:
-        """
-        Find the latest model path for a stage.
-        
-        This is useful when resuming from an experiment where the exact
-        model path is not known.
-        
-        Args:
-            stage_name: Name of the stage
-            pattern: Glob pattern for model directory
-            
-        Returns:
-            Path to model directory, or None if not found
-        """
-        search_dir = os.path.join(self.experiment_dir, stage_name)
-        if not os.path.exists(search_dir):
-            # Try looking in results/models
-            search_dir = os.path.join(self.experiment_dir, "..", "..", "models")
-        
-        if not os.path.exists(search_dir):
-            return None
-        
-        # Find matching directories
-        matches = glob.glob(os.path.join(search_dir, "**", pattern), recursive=True)
-        
-        if not matches:
-            return None
-        
-        # Return the most recently modified
-        return max(matches, key=os.path.getmtime)
-
-
-def find_or_create_manager(experiment_dir: str) -> StageManager:
-    """
-    Find or create a stage manager for an experiment.
-    
-    Args:
-        experiment_dir: Root directory for the experiment
-        
-    Returns:
-        StageManager instance
-    """
-    return StageManager(experiment_dir)
-
-
-if __name__ == "__main__":
-    # Test stage manager
-    import tempfile
-    
-    with tempfile.TemporaryDirectory() as tmpdir:
-        manager = StageManager(tmpdir)
-        
-        # Test stage lifecycle
-        manager.start_stage("stage1")
-        manager.complete_stage(
-            "stage1",
-            model_path="/path/to/model",
-            metrics={"loss": 0.1, "accuracy": 0.9}
-        )
-        
-        # Check dependencies
-        met, missing = manager.check_dependencies("stage2")
-        print(f"Stage 2 dependencies met: {met}, missing: {missing}")
-        
-        met, missing = manager.check_dependencies("stage3")
-        print(f"Stage 3 dependencies met: {met}, missing: {missing}")
-        
-        # Get model path
-        path = manager.get_model_path("stage1")
-        print(f"Stage 1 model path: {path}")
-        
-        # Summary
-        print("\nSummary:")
-        print(json.dumps(manager.get_summary(), indent=2))

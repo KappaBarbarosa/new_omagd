@@ -11,7 +11,6 @@ import json
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from copy import deepcopy
 
 
 @dataclass
@@ -330,21 +329,3 @@ def create_default_config(map_name: str, name: Optional[str] = None) -> Experime
         stage2=Stage2Config(),
         stage3=Stage3Config()
     )
-
-
-if __name__ == "__main__":
-    # Test configuration
-    config = create_default_config("8m_vs_9m")
-    print("Default config:")
-    print(yaml.dump(config.to_dict(), default_flow_style=False))
-    
-    # Validate
-    errors = config.validate()
-    if errors:
-        print(f"Validation errors: {errors}")
-    else:
-        print("Configuration is valid!")
-    
-    # Get stage args
-    print("\nStage 1 args:")
-    print(config.get_stage_args("stage1", seed=1))
