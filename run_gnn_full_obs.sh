@@ -11,7 +11,7 @@ python src/main.py \
     --config=qmix \
     --env-config=sc2 \
     with \
-    env_args.map_name=5m_vs_6m \
+    env_args.map_name=8m_vs_9m \
     mac=gnn_graph_mac \
     agent=gnn_rnn \
     gnn_layer_num=2 \
@@ -24,4 +24,5 @@ python src/main.py \
     save_model=True \
     save_model_interval=100000 \
     log_interval=10000 \
+    name="gnn_fullobs"
     local_results_path="results/gnn_fullobs"

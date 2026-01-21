@@ -1,77 +1,75 @@
 """
-Temporal Mamba module for processing stacked frames with selective state space.
+Temporal GRU module for processing stacked frames with recurrent memory.
 
 This module adds temporal memory capabilities to the mask predictor by processing
-token embeddings through Mamba blocks before passing them to the GraphTransformer.
+token embeddings through GRU blocks before passing them to the GraphTransformer.
+
+Originally designed for Mamba, but using GRU for better GPU compatibility.
 """
 
 import torch
 import torch.nn as nn
-from mamba_ssm import Mamba
 
 
-class TemporalMamba(nn.Module):
+class TemporalGRU(nn.Module):
     """
-    Mamba-based temporal memory module.
+    GRU-based temporal memory module.
     
     Processes stacked frames and outputs temporally-aware embeddings.
-    Uses Mamba's selective state space to remember relevant past information.
-    
-    The Mamba state space model has:
-    - O(1) inference complexity per token (like RNN)
-    - Parallel training (like Transformer)
-    - Strong long-range dependencies (selective mechanism)
+    Uses GRU's recurrent mechanism to remember relevant past information.
     
     Args:
         d_model: Model dimension (must match token embedding dim)
-        d_state: State dimension for Mamba (controls memory capacity)
-        d_conv: Convolution kernel size for local context
-        expand: Expansion factor for inner dimension
-        num_layers: Number of stacked Mamba blocks
+        d_state: Hidden state dimension for GRU (controls memory capacity)
+        num_layers: Number of stacked GRU layers
         dropout: Dropout rate
+        bidirectional: Whether to use bidirectional GRU
     """
     
     def __init__(
         self,
         d_model: int = 64,
-        d_state: int = 16,
-        d_conv: int = 4,
-        expand: int = 2,
+        d_state: int = 16,  # Not used directly, kept for API compatibility
+        d_conv: int = 4,     # Not used, kept for API compatibility
+        expand: int = 2,     # Not used, kept for API compatibility
         num_layers: int = 2,
         dropout: float = 0.1,
+        bidirectional: bool = False,
     ):
         super().__init__()
         
         self.d_model = d_model
         self.num_layers = num_layers
+        self.bidirectional = bidirectional
         
-        # Stack of Mamba blocks
-        self.layers = nn.ModuleList([
-            Mamba(
-                d_model=d_model,
-                d_state=d_state,
-                d_conv=d_conv,
-                expand=expand,
-            )
-            for _ in range(num_layers)
-        ])
+        # GRU layer
+        self.gru = nn.GRU(
+            input_size=d_model,
+            hidden_size=d_model,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=bidirectional,
+        )
         
-        # Layer normalization for each block
-        self.norms = nn.ModuleList([
-            nn.LayerNorm(d_model)
-            for _ in range(num_layers)
-        ])
+        # Project back if bidirectional
+        if bidirectional:
+            self.proj = nn.Linear(d_model * 2, d_model)
+        else:
+            self.proj = None
         
+        # Layer normalization
+        self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
     
     def forward(self, x: torch.Tensor, n_nodes_per_frame: int = None) -> torch.Tensor:
         """
-        Process stacked token embeddings through temporal Mamba blocks.
+        Process stacked token embeddings through temporal GRU.
         
-        For stacked frames input [B, k*N, D], we want to apply Mamba
+        For stacked frames input [B, k*N, D], we want to apply GRU
         per-node across time dimension. This means:
         1. Reshape to [B*N, k, D] (each node's temporal sequence)
-        2. Apply Mamba (processes along k dimension)
+        2. Apply GRU (processes along k dimension)
         3. Reshape back to [B, k*N, D]
         
         Args:
@@ -85,12 +83,13 @@ class TemporalMamba(nn.Module):
         B, total_nodes, D = x.shape
         
         if n_nodes_per_frame is None:
-            # Assume no temporal processing needed, just pass through
-            for layer, norm in zip(self.layers, self.norms):
-                residual = x
-                x = norm(x)
-                x = layer(x)
-                x = self.dropout(x) + residual
+            # Assume no temporal processing needed, just pass through with GRU
+            residual = x
+            x = self.norm(x)
+            x, _ = self.gru(x)
+            if self.proj is not None:
+                x = self.proj(x)
+            x = self.dropout(x) + residual
             return x
         
         # Calculate k (number of stacked frames)
@@ -99,11 +98,12 @@ class TemporalMamba(nn.Module):
         
         if k <= 1:
             # Only one frame, no temporal processing needed
-            for layer, norm in zip(self.layers, self.norms):
-                residual = x
-                x = norm(x)
-                x = layer(x)
-                x = self.dropout(x) + residual
+            residual = x
+            x = self.norm(x)
+            x, _ = self.gru(x)
+            if self.proj is not None:
+                x = self.proj(x)
+            x = self.dropout(x) + residual
             return x
         
         # Reshape: [B, k*N, D] -> [B, k, N, D] -> [B*N, k, D]
@@ -112,12 +112,13 @@ class TemporalMamba(nn.Module):
         x = x.permute(0, 2, 1, 3)        # [B, N, k, D]
         x = x.reshape(B * N, k, D)       # [B*N, k, D]
         
-        # Apply Mamba blocks (operates on temporal dimension k)
-        for layer, norm in zip(self.layers, self.norms):
-            residual = x
-            x = norm(x)
-            x = layer(x)  # Mamba processes sequence dimension (k)
-            x = self.dropout(x) + residual
+        # Apply GRU with residual connection
+        residual = x
+        x = self.norm(x)
+        x, _ = self.gru(x)  # GRU processes sequence dimension (k)
+        if self.proj is not None:
+            x = self.proj(x)
+        x = self.dropout(x) + residual
         
         # Reshape back: [B*N, k, D] -> [B, N, k, D] -> [B, k, N, D] -> [B, k*N, D]
         x = x.view(B, N, k, D)           # [B, N, k, D]
@@ -127,21 +128,19 @@ class TemporalMamba(nn.Module):
         return x
 
 
-def test_temporal_mamba():
+# Alias for backward compatibility
+TemporalMamba = TemporalGRU
+
+
+def test_temporal_gru():
     """Quick test to verify the module works correctly."""
-    if not MAMBA_AVAILABLE:
-        print("⚠️  mamba-ssm not available, skipping test")
-        return
-    
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Testing TemporalMamba on {device}...")
+    print(f"Testing TemporalGRU on {device}...")
     
     # Create module
-    model = TemporalMamba(
+    model = TemporalGRU(
         d_model=256,
         d_state=16,
-        d_conv=4,
-        expand=2,
         num_layers=2,
     ).to(device)
     
@@ -163,11 +162,11 @@ def test_temporal_mamba():
         if param.grad is not None:
             assert not torch.isnan(param.grad).any(), f"NaN gradient in {name}"
     
-    print(f"✅ TemporalMamba test passed!")
+    print(f"✅ TemporalGRU test passed!")
     print(f"   Input:  {x.shape}")
     print(f"   Output: {output.shape}")
     print(f"   Params: {sum(p.numel() for p in model.parameters()):,}")
 
 
 if __name__ == "__main__":
-    test_temporal_mamba()
+    test_temporal_gru()

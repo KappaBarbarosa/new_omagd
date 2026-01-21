@@ -8,9 +8,9 @@
 # The tokenizer_path should point to the directory containing tokenizer.th
 # from Stage 1 training.
 export WANDB_API_KEY=247e23f9da34555c8f9d172474c4d49ad150e88d
-export CUDA_VISIBLE_DEVICES=1
-MAP_NAME=${1:-"3m"}
-TOKENIZER_PATH="results/models/sc2_5m_vs_6m-obs_aid=1-obs_act=1/algo=omagd_origin-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/omagd_origin__2026-01-12_16-53-01/pretrain_stage1_best"
+export CUDA_VISIBLE_DEVICES=0
+MAP_NAME=${1:-"8m_vs_9m"}
+TOKENIZER_PATH="results/models/sc2_8m_vs_9m-obs_aid=1-obs_act=1/algo=omagd_hungarian-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/omagd_hungarian__2026-01-19_12-22-38/pretrain_stage1_best"
 # MASK_PREDICTOR_PATH="results/models/sc2_3m-obs_aid=1-obs_act=1/algo=omagd_origin-agent=n_rnn/env_n=8/rnn_dim=64-2bs=5000_128-tdlambda=0.6-epdec_0.05=100k/omagd_origin__2026-01-06_22-04-26/pretrain_stage2_best"
 python src/main.py --config=omagd --env-config=sc2 \
     with env_args.map_name=${MAP_NAME} \
